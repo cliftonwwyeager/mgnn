@@ -1,3 +1,15 @@
+# Checking for GPU and setting it as the default device
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        # Setting the first GPU as the default
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        print("Using GPU:", gpus[0].name)
+    except RuntimeError as e:
+        print("Error setting the GPU:", e)
+else:
+    print("No GPU detected. Using CPU.")
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Conv2D, Multiply, Flatten, Dense
@@ -29,10 +41,10 @@ def load_samples(data_dir, image_dim=256):
             image = binary_to_image(full_path, image_dim)
             if image is not None:
                 x_data.append(image)
-                y_data.append(1 if file.endswith('.vir') else 0)  # Assuming .vir files are malicious
+                y_data.append(1 if file.endswith('.gen-*') else 0)  # Assuming .gen-* files are malicious
     return np.array(x_data), np.array(y_data)
 
-data_dir = '/home/user/virusshare'  # Adjust this path
+data_dir = '/home/user/BazaarCollection'  # Adjust this path
 x_data, y_data = load_samples(data_dir)
 x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=0.4, random_state=42)
 x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
