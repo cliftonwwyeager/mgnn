@@ -1,15 +1,3 @@
-# Checking for GPU and setting it as the default device
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        # Setting the first GPU as the default
-        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
-        print("Using GPU:", gpus[0].name)
-    except RuntimeError as e:
-        print("Error setting the GPU:", e)
-else:
-    print("No GPU detected. Using CPU.")
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Conv2D, Multiply, Flatten, Dense
