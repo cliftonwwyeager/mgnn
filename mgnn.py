@@ -158,5 +158,3 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10
     # Get the best configuration after all generations
     best_config = select_top(population, performances)[0]
     return best_config
-
-    hyperparameters = evolutionary_optimization(x_train, y_train, x_val, y_val)
