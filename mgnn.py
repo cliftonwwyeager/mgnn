@@ -93,3 +93,70 @@ scan_results = scan_directory_for_malware(directory_to_scan, model)
 
 for filepath, result in scan_results.items():
     print(f"{filepath}: {result}")
+
+import random
+import tensorflow as tf
+search_space = {'learning_rate': [0.001, 0.0001, 1e-05], 'batch_size': [16, 32, 64], 'num_filters': [16, 32, 64], 'kernel_size': [(3, 3), (5, 5)], 'epochs': [5, 10, 15]}
+def random_configuration():
+    return {param: random.choice(values) for param, values in search_space.items()}
+
+def evaluate(config, x_train, y_train, x_val, y_val):
+    model = build_model(config['num_filters'], config['kernel_size'])
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config['learning_rate']),
+                  loss='binary_crossentropy', metrics=['accuracy'])
+    history = model.fit(x_train, y_train, validation_data=(x_val, y_val), 
+                        epochs=config['epochs'], batch_size=config['batch_size'], verbose=0)
+    # Return the best validation accuracy
+    return max(history.history['val_accuracy'])
+
+def select_top(population, performances, top_k=5):
+    # Select the top-k performing configurations
+    return [population[i] for i in sorted(range(len(performances)), key=lambda i: performances[i])[-top_k:]]
+
+def crossover(parent1, parent2):
+    child = {}
+    for param in search_space.keys():
+        child[param] = random.choice([parent1[param], parent2[param]])
+    return child
+
+def mutate(config):
+    mutated_config = config.copy()
+    # Randomly choose a hyperparameter to mutate
+    param_to_mutate = random.choice(list(search_space.keys()))
+    mutated_config[param_to_mutate] = random.choice(search_space[param_to_mutate])
+    return mutated_config
+
+def build_model(num_filters, kernel_size):
+    input_tensor = tf.keras.Input(shape=(256, 256, 1))
+    x = GatedCNNBlock(num_filters, kernel_size)(input_tensor)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+    model = tf.keras.Model(inputs=input_tensor, outputs=x)
+    return model
+
+def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10, population_size=20):
+    # Initialize population
+    population = [random_configuration() for _ in range(population_size)]
+
+    for generation in range(num_generations):
+        # Evaluate performance for each configuration
+        performances = [evaluate(config, x_train, y_train, x_val, y_val) for config in population]
+
+        # Select top-performers
+        top_performers = select_top(population, performances)
+
+        # Create new population through crossover and mutation
+        new_population = []
+        while len(new_population) < population_size:
+            parent1, parent2 = random.choice(top_performers), random.choice(top_performers)
+            child = crossover(parent1, parent2)
+            child = mutate(child)
+            new_population.append(child)
+
+        population = new_population
+
+    # Get the best configuration after all generations
+    best_config = select_top(population, performances)[0]
+    return best_config
+
+    hyperparameters = evolutionary_optimization(x_train, y_train, x_val, y_val)
