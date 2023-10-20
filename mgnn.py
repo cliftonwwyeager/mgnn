@@ -29,7 +29,7 @@ def load_samples(data_dir, image_dim=256):
             image = binary_to_image(full_path, image_dim)
             if image is not None:
                 x_data.append(image)
-                y_data.append(1 if file.endswith('.gen-*') else 0)  # Assuming .gen-* files are malicious
+                y_data.append(1 if file.endswith('.*-') else 0)  # Assuming '.*-' files are malicious
     return np.array(x_data), np.array(y_data)
 
 data_dir = '/home/user/BazaarCollection'  # Adjust this path
