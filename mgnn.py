@@ -39,7 +39,7 @@ def load_samples(data_dir, image_dim=256):
                 y_data.append(1 if file.endswith('.*-*') else 0)
     return np.array(x_data), np.array(y_data)
 
-data_dir = '/home/cliftonyeager/BazaarCollection'  # Adjust this path
+data_dir = '/home/user/BazaarCollection'  # Adjust this path
 x_data, y_data = load_samples(data_dir)
 x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=0.4, random_state=42)
 x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
@@ -88,7 +88,7 @@ def scan_directory_for_malware(directory_path, model, image_dim=256):
                 results[full_path] = f"Error: {str(e)}"
     return results
 
-model.save("/home/cliftonyeager/mgnn")
+model.save("/home/user/mgnn")
 
 try:
     model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=10, batch_size=32)
