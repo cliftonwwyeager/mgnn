@@ -13,8 +13,15 @@ def binary_to_image(binary_file_path, image_dim=256):
         with open(binary_file_path, 'rb') as f:
             byte_sequence = f.read()
         int_sequence = np.frombuffer(byte_sequence, dtype=np.uint8)
-        int_sequence = np.pad(int_sequence, (0, max(0, image_dim * image_dim - len(int_sequence))), 'constant')
-        image = int_sequence[:image_dim * image_dim].reshape(image_dim, image_dim).astype(np.uint8)
+
+        # Truncate or pad the int_sequence to match the desired image dimensions
+        desired_length = image_dim * image_dim
+        if len(int_sequence) > desired_length:
+            int_sequence = int_sequence[:desired_length]
+        else:
+            int_sequence = np.pad(int_sequence, (0, desired_length - len(int_sequence)), 'constant')
+
+        image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
         return image / 255.0
     except Exception as e:
         logging.error(f"Error converting binary to image for {binary_file_path}: {str(e)}")
@@ -29,10 +36,10 @@ def load_samples(data_dir, image_dim=256):
             image = binary_to_image(full_path, image_dim)
             if image is not None:
                 x_data.append(image)
-                y_data.append(1 if file.endswith('.*-') else 0)  # Assuming '.*-' files are malicious
+                y_data.append(1 if file.endswith('.*-') else 0)  # Assuming .gen-* files are malicious
     return np.array(x_data), np.array(y_data)
 
-data_dir = '/home/user/BazaarCollection'  # Adjust this path
+data_dir = '/home/cliftonyeager/BazaarCollection'  # Adjust this path
 x_data, y_data = load_samples(data_dir)
 x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=0.4, random_state=42)
 x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
@@ -81,14 +88,14 @@ def scan_directory_for_malware(directory_path, model, image_dim=256):
                 results[full_path] = f"Error: {str(e)}"
     return results
 
-model.save("/home/user/mgnn")
+model.save("/home/cliftonyeager/mgnn")
 
 try:
     model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=10, batch_size=32)
 except Exception as e:
     print(f"Error during model training: {str(e)}")
 
-directory_to_scan = '/home/user/files'  # Adjust this to the directory you want to scan
+directory_to_scan = '/'  # Adjust this to the directory you want to scan
 scan_results = scan_directory_for_malware(directory_to_scan, model)
 
 for filepath, result in scan_results.items():
