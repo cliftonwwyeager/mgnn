@@ -121,8 +121,8 @@ try:
 except Exception as e:
     print(f"Error during model training: {str(e)}")
 
-scan_results = scan_directory_for_malware(directory_to_scan, model, file_limit=1000)
 directory_to_scan = '/'  # Adjust this to the directory you want to scan
+scan_results = scan_directory_for_malware(directory_to_scan, model, file_limit=1000)
 
 for filepath, result in scan_results.items():
     print(f"{filepath}: {result}")
