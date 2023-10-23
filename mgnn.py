@@ -39,7 +39,7 @@ def load_samples(data_dir, image_dim=256):
                 y_data.append(1 if file.endswith('.*-') else 0)  # Assuming .gen-* files are malicious
     return np.array(x_data), np.array(y_data)
 
-data_dir = '/home/cliftonyeager/BazaarCollection'  # Adjust this path
+data_dir = '/home/user/BazaarCollection'  # Adjust this path
 
 def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=None):
     x_data = []
@@ -113,7 +113,7 @@ def scan_directory_for_malware(directory_path, model, image_dim=256):
                 results[full_path] = f"Error: {str(e)}"
     return results
 
-model.save("/home/cliftonyeager/mgnn")
+model.save("/home/user/mgnn")
 
 try:
     for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
