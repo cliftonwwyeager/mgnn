@@ -36,11 +36,11 @@ def load_samples(data_dir, image_dim=256):
             image = binary_to_image(full_path, image_dim)
             if image is not None:
                 x_data.append(image)
-                y_data.append(1 if file.endswith('.*-*') else 0)
+                y_data.append(1 if file.endswith('.*-*') else 0)  # Assuming .*-* files are malicious
     return np.array(x_data), np.array(y_data)
 
 data_dir = '/home/user/BazaarCollection'  # Adjust this path
-x_data, y_data = load_samples(data_dir)
+x_data, y_data = next(load_samples_generator(data_dir, file_limit=10000))
 x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=0.4, random_state=42)
 x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
 
@@ -65,7 +65,8 @@ x = Dense(1, activation='sigmoid')(x)
 model = tf.keras.Model(inputs=input_tensor, outputs=x)
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=10, batch_size=32)
+for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
+    model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
 
 loss, accuracy = model.evaluate(x_test, y_test)
 print(f"Test Loss: {loss:.4f}")
@@ -91,12 +92,13 @@ def scan_directory_for_malware(directory_path, model, image_dim=256):
 model.save("/home/user/mgnn")
 
 try:
-    model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=10, batch_size=32)
+    for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
+    model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
 except Exception as e:
     print(f"Error during model training: {str(e)}")
 
-directory_to_scan = '/'  # Adjust this to the directory you want to scan
-scan_results = scan_directory_for_malware(directory_to_scan, model)
+directory_to_scan = '/home/user/'  # Adjust this to the directory you want to scan
+scan_results = scan_directory_for_malware(directory_to_scan, model, file_limit=10000)
 
 for filepath, result in scan_results.items():
     print(f"{filepath}: {result}")
