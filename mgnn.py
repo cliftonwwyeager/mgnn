@@ -41,7 +41,7 @@ def load_samples(data_dir, image_dim=256):
 
 data_dir = '/home/user/BazaarCollection'  # Adjust this path
 
-def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=None):
+def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=10000):
     x_data = []
     y_data = []
     file_count = 0
@@ -55,7 +55,7 @@ def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=No
             image = binary_to_image(full_path, image_dim)
             if image is not None:
                 x_data.append(image)
-                y_data.append(1 if file.endswith('.*-') else 0)
+                y_data.append(1 if file.endswith('.*-*') else 0)
                 file_count += 1
                 if len(x_data) == batch_size:
                     yield np.array(x_data), np.array(y_data)
@@ -64,7 +64,6 @@ def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=No
         yield np.array(x_data), np.array(y_data)
         
 x_data, y_data = next(load_samples_generator(data_dir, file_limit=10000))
-
 x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=0.4, random_state=42)
 x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
 
@@ -121,8 +120,8 @@ try:
 except Exception as e:
     print(f"Error during model training: {str(e)}")
 
-directory_to_scan = '/'  # Adjust this to the directory you want to scan
-scan_results = scan_directory_for_malware(directory_to_scan, model, file_limit=1000)
+directory_to_scan = '/home/user/'  # Adjust this to the directory you want to scan
+scan_results = scan_directory_for_malware(directory_to_scan, model)
 
 for filepath, result in scan_results.items():
     print(f"{filepath}: {result}")
@@ -188,9 +187,6 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10
 
         population = new_population
 
-    # Get the best configuration after all generations
-    best_config = select_top(population, performances)[0]
-    return best_config
     # Get the best configuration after all generations
     best_config = select_top(population, performances)[0]
     return best_config
