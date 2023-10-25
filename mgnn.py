@@ -73,7 +73,7 @@ x_val = x_val.reshape(-1, 256, 256, 1)
 x_test = x_test.reshape(-1, 256, 256, 1)
 
 
-def OptimizedGatedCNNBlock(filters, kernel_size, stride=(1,1)):
+def GatedCNNBlock(filters, kernel_size, stride=(1,1)):
     def block(x):
         # Original convolution layer with ReLU activation
         conv = Conv2D(filters, kernel_size, padding='same', activation='relu', strides=stride)(x)
@@ -88,13 +88,13 @@ def OptimizedGatedCNNBlock(filters, kernel_size, stride=(1,1)):
     return block
 
 # Define the enhanced network architecture
-input_tensor_enhanced = Input(shape=(256, 256, 1))
-x_enhanced = OptimizedGatedCNNBlock(32, (5,5), stride=(2,2))(input_tensor_enhanced)
-x_enhanced = GlobalMaxPooling2D()(x_enhanced)
-x_enhanced = Dense(1, activation='sigmoid')(x_enhanced)
+input_tensor = Input(shape=(256, 256, 1))
+x = GatedCNNBlock(32, (5,5), stride=(2,2))(input_tensor)
+x = GlobalMaxPooling2D()(x)
+x = Dense(1, activation='sigmoid')(x)
 
-model_enhanced = tf.keras.Model(inputs=input_tensor_enhanced, outputs=x_enhanced)
-model_enhanced.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model = tf.keras.Model(inputs=input_tensor, outputs=x)
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
 for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
         model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
@@ -195,6 +195,9 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10
 
         population = new_population
 
+    # Get the best configuration after all generations
+    best_config = select_top(population, performances)[0]
+    return best_config
     # Get the best configuration after all generations
     best_config = select_top(population, performances)[0]
     return best_config
