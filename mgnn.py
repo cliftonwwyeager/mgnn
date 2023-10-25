@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv2D, Multiply, Flatten, Dense
+from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense
 import os
 from sklearn.model_selection import train_test_split
 import logging
@@ -73,20 +73,28 @@ x_val = x_val.reshape(-1, 256, 256, 1)
 x_test = x_test.reshape(-1, 256, 256, 1)
 
 
-def GatedCNNBlock(filters, kernel_size):
+def OptimizedGatedCNNBlock(filters, kernel_size, stride=(1,1)):
     def block(x):
-        conv = Conv2D(filters, kernel_size, padding='same')(x)
-        gate = Conv2D(filters, kernel_size, padding='same', activation='sigmoid')(x)
-        return Multiply()([conv, gate])
+        # Original convolution layer with ReLU activation
+        conv = Conv2D(filters, kernel_size, padding='same', activation='relu', strides=stride)(x)
+        
+        # Parallel convolution layer with sigmoid activation for gating
+        gate = Conv2D(filters, kernel_size, padding='same', activation='sigmoid', strides=stride)(x)
+        
+        # Multiply the ReLU output with the sigmoid output for gating
+        gated_output = Multiply()([conv, gate])
+        
+        return gated_output
     return block
 
-input_tensor = Input(shape=(256, 256, 1))
-x = GatedCNNBlock(32, (3,3))(input_tensor)
-x = Flatten()(x)
-x = Dense(1, activation='sigmoid')(x)
+# Define the enhanced network architecture
+input_tensor_enhanced = Input(shape=(256, 256, 1))
+x_enhanced = OptimizedGatedCNNBlock(32, (5,5), stride=(2,2))(input_tensor_enhanced)
+x_enhanced = GlobalMaxPooling2D()(x_enhanced)
+x_enhanced = Dense(1, activation='sigmoid')(x_enhanced)
 
-model = tf.keras.Model(inputs=input_tensor, outputs=x)
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model_enhanced = tf.keras.Model(inputs=input_tensor_enhanced, outputs=x_enhanced)
+model_enhanced.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
 for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
         model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
