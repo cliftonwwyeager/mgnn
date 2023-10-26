@@ -1,6 +1,8 @@
+import math
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import os
 from sklearn.model_selection import train_test_split
 import logging
@@ -96,8 +98,22 @@ x = Dense(1, activation='sigmoid')(x)
 model = tf.keras.Model(inputs=input_tensor, outputs=x)
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
-        model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
+
+# Data Augmentation using TensorFlow's ImageDataGenerator
+data_gen = ImageDataGenerator(
+    rotation_range=10,
+    zoom_range=0.1,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    horizontal_flip=True,
+    vertical_flip=True,
+    brightness_range=(0.8, 1.2)
+)
+
+# Augmented data generator
+augmented_data_gen = data_gen.flow(x_train, y_train, batch_size=32)
+
+model.fit(augmented_data_gen, validation_data=(x_val, y_val), epochs=10, steps_per_epoch=math.ceil(len(x_train)/32))
 
 loss, accuracy = model.evaluate(x_test, y_test)
 print(f"Test Loss: {loss:.4f}")
@@ -121,8 +137,7 @@ def scan_directory_for_malware(directory_path, model, image_dim=256):
     return results
 
 try:
-    for batch_x, batch_y in load_samples_generator(data_dir, file_limit=10000):
-        model.fit(batch_x, batch_y, validation_data=(x_val, y_val), epochs=10, batch_size=32)
+    model.fit(augmented_data_gen, validation_data=(x_val, y_val), epochs=10, steps_per_epoch=len(x_train)//32)
 except Exception as e:
     print(f"Error during model training: {str(e)}")
 
@@ -187,9 +202,6 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10
 
         population = new_population
 
-    # Get the best configuration after all generations
-    best_config = select_top(population, performances)[0]
-    return best_config
     # Get the best configuration after all generations
     best_config = select_top(population, performances)[0]
     return best_config
