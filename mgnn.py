@@ -1,3 +1,5 @@
+import csv
+import hashlib
 import math
 import numpy as np
 import tensorflow as tf
@@ -8,12 +10,65 @@ from sklearn.model_selection import train_test_split
 import logging
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 
-def binary_to_image(binary_file_path, image_dim=256):
+
+def load_malicious_hashes_from_csv(csv_path):
+    hashes = ['/home/user/full.csv']
+    if not csv_path or not os.path.exists(csv_path):
+        raise ValueError(f"Invalid path to CSV: {csv_path}")
     try:
-        with open(binary_file_path, 'rb') as f:
-            byte_sequence = f.read()
+        with open(csv_path, 'r', newline='') as csvfile:
+            reader = csv.reader(csvfile)
+            for row in reader:
+                if len(row) > 1:
+                    hashes.append(row[1])
+        return hashes
+    except Exception as e:
+        raise RuntimeError(f"Error reading SHA-256 hashes from {csv_path}: {str(e)}")
+
+
+
+def convert_files_to_hashes(directory):
+    file_hashes = ['/home/user/stuff']
+    if not directory or not os.path.exists(directory):
+        raise ValueError(f"Invalid directory path: {directory}")
+    for root, _, files in os.walk(directory):
+        for file in files:
+            file_path = os.path.join(root, file)
+            with open(file_path, 'rb') as f:
+                content = f.read()
+                file_hash = hashlib.sha256(content).hexdigest()
+                file_hashes.append(file_hash)
+    return file_hashes
+
+
+
+
+
+def binary_to_image(hash_value, data_dir, csv_path=None, image_dim=256):
+    if len(hash_value) != 64:  # Not a SHA-256 hash
+        logging.error(f"Provided input data is not a valid SHA-256 hash.")
+        return None
+
+    malicious_hashes = load_malicious_hashes_from_csv(csv_path) if csv_path else []
+    benign_hashes = convert_files_to_hashes(data_dir)
+
+    # Check if hash_value is either from malicious list or benign list
+    if hash_value not in malicious_hashes and hash_value not in benign_hashes:
+        logging.error(f"Hash {hash_value} is not from an allowed source.")
+        return None
+
+    try:
+        # Locate the corresponding binary file in the directory based on the hash
+        for root, _, files in os.walk(data_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                    if hashlib.sha256(content).hexdigest() == hash_value:
+                        byte_sequence = content
+                        break
+
         int_sequence = np.frombuffer(byte_sequence, dtype=np.uint8)
 
         # Truncate or pad the int_sequence to match the desired image dimensions
@@ -26,10 +81,31 @@ def binary_to_image(binary_file_path, image_dim=256):
         image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
         return image / 255.0
     except Exception as e:
-        logging.error(f"Error converting binary to image for {binary_file_path}: {str(e)}")
+        logging.error(f"Error converting hash {hash_value} to image: {str(e)}")
         return None
 
-def load_samples(data_dir, image_dim=256):
+def load_samples(data_dir, csv_path='/home/user/full.csv', image_dim=256):
+    x_data = []
+    y_data = []
+    malicious_hashes = load_malicious_hashes_from_csv(csv_path) if csv_path else []
+    benign_hashes = convert_files_to_hashes(data_dir)
+
+    # Process malicious samples
+    for hash_value in malicious_hashes:
+        image = binary_to_image(hash_value, data_dir=data_dir, image_dim=image_dim)
+        if image is not None:
+            x_data.append(image)
+            y_data.append(1)  # Mark as malicious
+
+    # Process benign samples
+    for hash_value in benign_hashes:
+        image = binary_to_image(hash_value, data_dir=data_dir, image_dim=image_dim)
+        if image is not None:
+            x_data.append(image)
+            y_data.append(0)  # Mark as benign
+
+    return np.array(x_data), np.array(y_data)
+
     x_data = []
     y_data = []
     for root, _, files in os.walk(data_dir):
@@ -41,9 +117,38 @@ def load_samples(data_dir, image_dim=256):
                 y_data.append(1 if file.endswith('.*-*') else 0)  # Assuming .*-* files are malicious
     return np.array(x_data), np.array(y_data)
 
-data_dir = '/home/user/'  # Adjust this path
+data_dir = '/home/user/stuff'  # Adjust this path
 
-def load_samples_generator(data_dir, image_dim=256, batch_size=32, file_limit=10000):
+
+def load_samples_generator(data_dir, csv_path='/home/user/full.csv', image_dim=256, batch_size=32, file_limit=10000):
+    x_data = []
+    y_data = []
+    file_count = 0
+    malicious_hashes = load_malicious_hashes_from_csv(csv_path) if csv_path else []
+    benign_hashes = convert_files_to_hashes(data_dir)
+
+    # Process malicious samples
+    for hash_value in malicious_hashes:
+        image = binary_to_image(hash_value, data_dir=data_dir, image_dim=image_dim)
+        if image is not None:
+            x_data.append(image)
+            y_data.append(1)  # Mark as malicious
+            file_count += 1
+            if file_count >= file_limit:
+                yield np.array(x_data), np.array(y_data)
+                x_data, y_data, file_count = [], [], 0
+
+    # Process benign samples
+    for hash_value in benign_hashes:
+        image = binary_to_image(hash_value, data_dir=data_dir, image_dim=image_dim)
+        if image is not None:
+            x_data.append(image)
+            y_data.append(0)  # Mark as benign
+            file_count += 1
+            if file_count >= file_limit:
+                yield np.array(x_data), np.array(y_data)
+                x_data, y_data, file_count = [], [], 0
+
     x_data = []
     y_data = []
     file_count = 0
@@ -119,23 +224,6 @@ loss, accuracy = model.evaluate(x_test, y_test)
 print(f"Test Loss: {loss:.4f}")
 print(f"Test Accuracy: {accuracy:.4f}")
 
-def scan_directory_for_malware(directory_path, model, image_dim=256):
-    results = {}
-    for root, _, files in os.walk(directory_path):
-        for file in files:
-            full_path = os.path.join(root, file)
-            try:
-                image_representation = binary_to_image(full_path, image_dim)
-                if image_representation is not None:
-                    prediction = model.predict(image_representation.reshape(1, image_dim, image_dim, 1))
-                    is_malware = prediction[0][0] > 0.5
-                    results[full_path] = "Malicious" if is_malware else "Benign"
-                else:
-                    results[full_path] = "Error: Could not convert to image"
-            except Exception as e:
-                results[full_path] = f"Error: {str(e)}"
-    return results
-
 try:
     model.fit(augmented_data_gen, validation_data=(x_val, y_val), epochs=10, steps_per_epoch=len(x_train)//32)
 except Exception as e:
@@ -206,10 +294,35 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, num_generations=10
     best_config = select_top(population, performances)[0]
     return best_config
 
-directory_to_scan = '/home/user/'  # Adjust this to the directory you want to scan
-scan_results = scan_directory_for_malware(directory_to_scan, model)
+def scan_directory_for_malware(directory_path, model, image_dim=256):
+    results = {}
+    for root, _, files in os.walk(directory_path):
+        for file in files:
+            full_path = os.path.join(root, file)
+            try:
+                image_representation = binary_to_image(full_path, image_dim)
+                if image_representation is not None:
+                    prediction = model.predict(image_representation.reshape(1, image_dim, image_dim, 1))
+                    is_malware = prediction[0][0] > 0.5
+                    results[full_path] = "Malicious" if is_malware else "Benign"
+                else:
+                    results[full_path] = "Error: Could not convert to image"
+            except Exception as e:
+                results[full_path] = f"Error: {str(e)}"
+    return results
 
-for filepath, result in scan_results.items():
+
+def prepare_data(data_dir, csv_path=None, image_dim=256, test_size=0.4):
+    x_data, y_data = next(load_samples_generator(data_dir, csv_path, file_limit=10000))
+    x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
+    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
+
+    # Ensure data shape compatibility
+    x_train = x_train.reshape(-1, image_dim, image_dim, 1)
+    x_val = x_val.reshape(-1, image_dim, image_dim, 1)
+    x_test = x_test.reshape(-1, image_dim, image_dim, 1)
+
+    return x_train, y_train, x_val, y_val, x_test, y_test
     print(f"{filepath}: {result}")
     
 model.save("/home/user/mgnn")
