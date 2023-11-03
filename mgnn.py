@@ -9,8 +9,6 @@ import os
 from sklearn.model_selection import train_test_split
 import logging
 
-# Setup logging
-
 
 def load_malicious_hashes_from_csv(csv_path):
     hashes = ['/home/user/full.csv']
