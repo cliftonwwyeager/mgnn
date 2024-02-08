@@ -144,8 +144,8 @@ def evolutionary_optimization(x_train, y_train, x_val, y_val, search_space, num_
     return best_config
 
 def main():
-    data_dir = '/home/cliftonyeager/'
-    csv_path = '/home/cliftonyeager/full.csv'
+    data_dir = '/home/user/'
+    csv_path = '/home/user/full.csv'
     image_dim = 256
     test_size = 0.2
     search_space = {
