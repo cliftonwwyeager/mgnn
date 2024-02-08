@@ -13,4 +13,4 @@
        ░         ░          ░          ░ 
                                          
 
-Malware detection gated CNN v1.4.1 - Memory/CPU optimized
+Malware detection gated CNN v1.4.2 - Memory/CPU optimized
