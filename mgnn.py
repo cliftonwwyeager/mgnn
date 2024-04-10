@@ -98,11 +98,10 @@ def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
     return block
 
 def build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(5,5), dropout_rate=0.3):
-    # Adjusted model architecture with more layers and increased dropout in dense layer
     input_tensor = Input(shape=input_shape)
     x = GatedCNNBlock(num_filters, kernel_size, dropout_rate=dropout_rate)(input_tensor)
     x = Flatten()(x)
-    x = Dropout(0.5)(x) # Increased dropout rate for dense layer
+    x = Dropout(0.5)(x)
     x = Dense(1, activation='sigmoid')(x)
     model = tf.keras.Model(inputs=input_tensor, outputs=x)
     return model
