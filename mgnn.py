@@ -85,19 +85,24 @@ def load_samples(data_dir, csv_path=None, image_dim=256):
 
 def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
     def block(x):
-        conv = Conv2D(filters, kernel_size, padding='same', activation='relu', strides=stride)(x)
+        conv = Conv2D(filters, kernel_size, padding='same', strides=stride)(x)
+        conv = BatchNormalization()(conv)
+        conv = tf.keras.activations.relu(conv)
         conv = Dropout(dropout_rate)(conv)
-        gate = Conv2D(filters, kernel_size, padding='same', activation='sigmoid', strides=stride)(x)
+        gate = Conv2D(filters, kernel_size, padding='same', strides=stride)(x)
+        gate = BatchNormalization()(gate)
+        gate = tf.keras.activations.sigmoid(gate)
         gate = Dropout(dropout_rate)(gate)
         gated_output = Multiply()([conv, gate])
         return gated_output
     return block
 
 def build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(5,5), dropout_rate=0.3):
+    # Adjusted model architecture with more layers and increased dropout in dense layer
     input_tensor = Input(shape=input_shape)
     x = GatedCNNBlock(num_filters, kernel_size, dropout_rate=dropout_rate)(input_tensor)
     x = Flatten()(x)
-    x = Dropout(dropout_rate)(x)
+    x = Dropout(0.5)(x) # Increased dropout rate for dense layer
     x = Dense(1, activation='sigmoid')(x)
     model = tf.keras.Model(inputs=input_tensor, outputs=x)
     return model
@@ -156,6 +161,9 @@ def evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, init
     best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
 
 def main():
+    data_augmentation = ImageDataGenerator(rotation_range=20, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.1, zoom_range=0.1, horizontal_flip=True, fill_mode='nearest')
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    learning_rate_scheduler = LearningRateScheduler(lambda epoch: 1e-3 * 10 ** (-epoch / 20))
     data_dir = '/home/user/'
     csv_path = '/home/user/full.csv'
     image_dim = 256
