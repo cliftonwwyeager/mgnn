@@ -124,24 +124,36 @@ def mutate(config, search_space):
     config[param_to_mutate] = random.choice(search_space[param_to_mutate])
     return config
 
-def evolutionary_optimization(x_train, y_train, x_val, y_val, search_space, num_generations=10, population_size=20, top_k=5):
+def run_evolutionary_optimization_generation(x_train, y_train, x_val, y_val, search_space):
+    population_size = 20
     population = [random_configuration(search_space) for _ in range(population_size)]
-    for generation in range(num_generations):
-        performances = []
-        for config in population:
-            model = build_model(num_filters=config['num_filters'], kernel_size=config['kernel_size'], dropout_rate=config['dropout_rate'])
-            performance = evaluate(model, x_train, y_train, x_val, y_val, config['epochs'], config['batch_size'])
-            performances.append(performance)
-        top_performers = select_top(population, performances, top_k=top_k)
-        new_population = []
-        while len(new_population) < population_size:
-            parent1, parent2 = random.sample(top_performers, 2)
-            child = crossover(parent1, parent2, search_space)
-            child = mutate(child, search_space)
-            new_population.append(child)
-        population = new_population
-    best_config = select_top(population, performances, top_k=1)[0]
-    return best_config
+    performances = []
+    for config in population:
+        model = build_model(num_filters=config['num_filters'], kernel_size=config['kernel_size'], dropout_rate=config['dropout_rate'])
+        performance = evaluate(model, x_train, y_train, x_val, y_val, config['epochs'], config['batch_size'])
+        performances.append(performance)
+    best_index = performances.index(max(performances))
+    best_config = population[best_index]
+    best_performance = performances[best_index]
+    return best_config, best_performance
+
+def evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, initial_search_space, max_generations=100, performance_threshold=0.01):
+    search_space = initial_search_space.copy()
+    last_best_performance = 0
+    generation = 0
+
+    while generation < max_generations:
+        best_config, best_performance = run_evolutionary_optimization_generation(x_train, y_train, x_val, y_val, search_space)
+        
+        if abs(best_performance - last_best_performance) < performance_threshold:
+            print(f"Optimization converged at generation {generation} with performance {best_performance}")
+            break
+        
+        last_best_performance = best_performance
+        adjust_search_space_based_on_performance(search_space, best_config)
+        generation += 1
+    
+    best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
 
 def main():
     data_dir = '/home/user/'
