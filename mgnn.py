@@ -2,8 +2,8 @@ import csv
 import hashlib
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, Flatten
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, Flatten, BatchNormalization
+from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler
 import os
 from sklearn.model_selection import train_test_split
@@ -49,7 +49,7 @@ def binary_to_image(hash_value, data_dir, csv_path, image_dim=256):
     malicious_hashes = load_malicious_hashes_from_csv(csv_path)
     benign_hashes = convert_files_to_hashes(data_dir)
     if hash_value not in malicious_hashes and hash_value not in benign_hashes:
-        logging.error("Hash {hash_value} is not from an allowed source.")
+        logging.error(f"Hash {hash_value} is not from an allowed source.")
         return None
     byte_sequence = None
     for root, _, files in os.walk(data_dir):
@@ -71,17 +71,33 @@ def binary_to_image(hash_value, data_dir, csv_path, image_dim=256):
     image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
     return image / 255.0
 
-def load_samples(data_dir, csv_path=None, image_dim=256):
-    x_data = []
-    y_data = []
-    malicious_hashes = load_malicious_hashes_from_csv(csv_path) if csv_path else []
-    benign_hashes = convert_files_to_hashes(data_dir)
-    for hash_value in malicious_hashes + benign_hashes:
-        image = binary_to_image(hash_value, data_dir, csv_path, image_dim)
-        if image is not None:
-            x_data.append(image)
-            y_data.append(1 if hash_value in malicious_hashes else 0)
-    return np.array(x_data), np.array(y_data)
+def load_and_preprocess_data(directory, img_size=(256, 256), batch_size=32, validation_split=0.2):
+    datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        fill_mode='nearest',
+        validation_split=validation_split
+    )
+    train_generator = datagen.flow_from_directory(
+        directory,
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        subset='training'
+    )
+    validation_generator = datagen.flow_from_directory(
+        directory,
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        subset='validation'
+    )
+    return train_generator, validation_generator
 
 def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
     def block(x):
@@ -97,14 +113,30 @@ def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
         return gated_output
     return block
 
-def build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(5,5), dropout_rate=0.3):
-    input_tensor = Input(shape=input_shape)
-    x = GatedCNNBlock(num_filters, kernel_size, dropout_rate=dropout_rate)(input_tensor)
-    x = Flatten()(x)
+def build_model(input_shape):
+    inputs = Input(shape=input_shape)
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
+    x = BatchNormalization()(x)
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+    x = BatchNormalization()(x)
+    x = GlobalMaxPooling2D()(x)
+    x = Dense(128, activation='relu')(x)
     x = Dropout(0.5)(x)
-    x = Dense(1, activation='sigmoid')(x)
-    model = tf.keras.Model(inputs=input_tensor, outputs=x)
+    x = Dense(64, activation='relu')(x)
+    x = Dropout(0.5)(x)
+    outputs = Dense(10, activation='softmax')(x)
+    model = Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     return model
+
+def train_model():
+    train_gen, val_gen = load_and_preprocess_data('/home/user/')
+    model = build_model((256, 256, 3))
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=10, verbose=1),
+        ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss', mode='min')
+    ]
+    model.fit(train_gen, epochs=50, validation_data=val_gen, callbacks=callbacks)
 
 def random_configuration(search_space):
     return {param: random.choice(values) for param, values in search_space.items()}
@@ -145,19 +177,14 @@ def evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, init
     search_space = initial_search_space.copy()
     last_best_performance = 0
     generation = 0
-
     while generation < max_generations:
         best_config, best_performance = run_evolutionary_optimization_generation(x_train, y_train, x_val, y_val, search_space)
-        
         if abs(best_performance - last_best_performance) < performance_threshold:
             print(f"Optimization converged at generation {generation} with performance {best_performance}")
             break
-        
         last_best_performance = best_performance
         adjust_search_space_based_on_performance(search_space, best_config)
         generation += 1
-    
-    best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
 
 def main():
     data_augmentation = ImageDataGenerator(rotation_range=20, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.1, zoom_range=0.1, horizontal_flip=True, fill_mode='nearest')
@@ -174,6 +201,7 @@ def main():
         'batch_size': [32, 64],
         'epochs': [10, 20]
     }
+    pass
 
     x_data, y_data = load_samples(data_dir, csv_path, image_dim)
     x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
