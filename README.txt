@@ -13,4 +13,4 @@
        ░         ░          ░          ░ 
                                          
 
-Malware detection gated CNN v1.4.5
+Malware detection gated CNN v1.4.6
