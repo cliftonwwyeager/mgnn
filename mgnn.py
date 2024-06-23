@@ -4,11 +4,13 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, Flatten, BatchNormalization
 from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler
+from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
 import os
 from sklearn.model_selection import train_test_split
 import logging
 import random
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.mixed_precision import experimental as mixed_precision
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -130,11 +132,14 @@ def build_model(input_shape):
     return model
 
 def train_model():
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_policy(policy)
     train_gen, val_gen = load_and_preprocess_data('/home/user/')
     model = build_model((256, 256, 3))
     callbacks = [
         EarlyStopping(monitor='val_loss', patience=10, verbose=1),
-        ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss', mode='min')
+        ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss', mode='min'),
+        LearningRateScheduler(lambda epoch: 1e-3 * 10 ** (-epoch / 20))
     ]
     model.fit(train_gen, epochs=50, validation_data=val_gen, callbacks=callbacks)
 
@@ -201,12 +206,11 @@ def main():
         'batch_size': [32, 64],
         'epochs': [10, 20]
     }
-    pass
 
     x_data, y_data = load_samples(data_dir, csv_path, image_dim)
     x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
     x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
-    best_config = evolutionary_optimization(x_train, y_train, x_val, y_val, search_space)
+    best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
     logging.info(f"Best configuration: {best_config}")
 
     model = build_model(input_shape=(image_dim, image_dim, 1), 
