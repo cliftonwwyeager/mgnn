@@ -11,6 +11,7 @@ import logging
 import random
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.mixed_precision import experimental as mixed_precision
+from tensorflow.keras.optimizers import Adam
 
 logging.basicConfig(level=logging.ERROR)
 
