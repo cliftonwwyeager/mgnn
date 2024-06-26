@@ -1,4 +1,3 @@
-# mgnn
 
 
 
@@ -13,4 +12,4 @@
        ░         ░          ░          ░ 
                                          
 
-Malware detection gated CNN v1.4.6
+Malware detection gated CNN v1.4.7
