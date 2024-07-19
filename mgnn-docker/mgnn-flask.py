@@ -1,66 +1,56 @@
+from flask import Flask, request, jsonify, render_template
 import os
-import redis
 import hashlib
-from flask import Flask, request, jsonify
+import redis
 from werkzeug.utils import secure_filename
-from mgnn import analyze_file, train_model
+from mgnn1 import load_malicious_hashes_from_csv, convert_files_to_hashes, binary_to_image, build_model, train_model
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = '/path/to/upload/folder'
-app.config['ALLOWED_EXTENSIONS'] = {'exe', 'dll', 'bin'}
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_port = os.getenv('REDIS_PORT', 6379)
+redis_password = os.getenv('REDIS_PASSWORD', None)
+redis_client = redis.StrictRedis(host=redis_host, port=int(redis_port), password=redis_password, db=0)
 
-# Initialize Redis
-r = redis.Redis(host='redis', port=6379, db=0)
+@app.route('/')
+def index():
+    return render_template('upload.html')
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
-@app.route('/api/upload', methods=['POST'])
+@app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
+        return jsonify({'error': 'No file part'})
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-    if file and allowed_file(file.filename):
+        return jsonify({'error': 'No selected file'})
+    if file:
         filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        file_hash = hashlib.md5(open(filepath, 'rb').read()).hexdigest()
-        r.lpush('file_queue', filepath)
-        return jsonify({'message': 'File uploaded successfully', 'file_hash': file_hash}), 200
-    else:
-        return jsonify({'error': 'File type not allowed'}), 400
+        file_path = os.path.join('/path/to/save', filename)
+        file.save(file_path)
+        hash_value = calculate_hash(file_path)
+        image = binary_to_image(hash_value, '/path/to/data', '/path/to/full.csv')
+        model = build_model((256, 256, 1))
+        prediction = model.predict(image)
+        redis_client.set(hash_value, prediction.tolist())
+        return jsonify({'prediction': prediction.tolist()})
 
-@app.route('/api/process', methods=['GET'])
-def process_files():
-    while r.llen('file_queue') > 0:
-        filepath = r.rpop('file_queue').decode('utf-8')
-        result = analyze_file(filepath, app.config['UPLOAD_FOLDER'])  # Pass the upload directory to analyze_file
-        file_hash = hashlib.md5(open(filepath, 'rb').read()).hexdigest()
-        r.hset('results', file_hash, str(result))
-    return jsonify({'message': 'Processing complete'}), 200
-
-@app.route('/api/results/<file_hash>', methods=['GET'])
-def get_results(file_hash):
-    result = r.hget('results', file_hash)
-    if result:
-        return jsonify({'file_hash': file_hash, 'result': result.decode('utf-8')}), 200
-    else:
-        return jsonify({'error': 'No results found for this file'}), 404
-
-@app.route('/api/feedback', methods=['POST'])
-def submit_feedback():
+@app.route('/confirm', methods=['GET', 'POST'])
+def confirm():
+    if request.method == 'GET':
+        return render_template('confirm.html')
     data = request.json
-    file_hash = data['file_hash']
-    feedback = data['feedback']
-    r.hset('feedback', file_hash, feedback)
-    return jsonify({'message': 'Feedback received'}), 200
+    hash_value = data.get('hash')
+    if not hash_value:
+        return jsonify({'error': 'No hash provided'})
+    prediction = redis_client.get(hash_value)
+    if not prediction:
+        return jsonify({'error': 'No prediction found for the provided hash'})
+    redis_client.set(f"confirmed:{hash_value}", prediction)
+    return jsonify({'status': 'Confirmation recorded'})
 
-@app.route('/api/train', methods=['POST'])
-def train():
-    train_model(app.config['UPLOAD_FOLDER'])
-    return jsonify({'message': 'Training complete'}), 200
+def calculate_hash(file_path):
+    with open(file_path, 'rb') as f:
+        content = f.read()
+        return hashlib.sha256(content).hexdigest()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
