@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MGNN Malware Detection</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <h1>MGNN Malware Detection</h1>
@@ -22,8 +22,19 @@
     <div class="upload-box" id="upload-box">
         Click or drag and drop files here to upload
     </div>
-    <button id="process-btn">Process Files</button>
-    <div id="results"></div>
-    <script src="script.js"></script>
+    <form id="upload-form" method="post" enctype="multipart/form-data" style="display:none;">
+        <input type="file" name="file" id="file-input" required>
+        <button type="submit">Upload</button>
+    </form>
+    <button id="upload-btn">Upload File</button>
+    <div id="upload-result"></div>
+    <h2>Confirm Prediction</h2>
+    <form id="confirm-form" method="post">
+        <label for="hash-input">Hash:</label>
+        <input type="text" name="hash" id="hash-input" required>
+        <button type="submit">Confirm</button>
+    </form>
+    <div id="confirm-result"></div>
+    <script src="{{ url_for('static', filename='scripts.js') }}"></script>
 </body>
 </html>
