@@ -1,91 +1,76 @@
-const uploadBox = document.getElementById('upload-box');
-const processBtn = document.getElementById('process-btn');
-const resultsDiv = document.getElementById('results');
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadForm = document.getElementById('upload-form');
+    const uploadBox = document.getElementById('upload-box');
+    const uploadBtn = document.getElementById('upload-btn');
+    const confirmForm = document.getElementById('confirm-form');
 
-uploadBox.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    uploadBox.classList.add('dragover');
-});
+    if (uploadBox) {
+        uploadBox.addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
 
-uploadBox.addEventListener('dragleave', () => {
-    uploadBox.classList.remove('dragover');
-});
+        uploadBox.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadBox.classList.add('dragover');
+        });
 
-uploadBox.addEventListener('drop', (event) => {
-    event.preventDefault();
-    uploadBox.classList.remove('dragover');
-    handleFiles(event.dataTransfer.files);
-});
+        uploadBox.addEventListener('dragleave', () => {
+            uploadBox.classList.remove('dragover');
+        });
 
-uploadBox.addEventListener('click', () => {
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.multiple = true;
-    fileInput.onchange = () => handleFiles(fileInput.files);
-    fileInput.click();
-});
-
-function handleFiles(files) {
-    for (let file of files) {
-        uploadFile(file);
+        uploadBox.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadBox.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            document.getElementById('file-input').files = files;
+            uploadForm.submit();
+        });
     }
-}
 
-function uploadFile(file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            alert(data.error);
-        } else {
-            alert(data.message);
-        }
-    });
-}
+    if (uploadBtn) {
+        uploadBtn.addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
 
-processBtn.addEventListener('click', () => {
-    fetch('/api/process', {
-        method: 'GET'
-    })
-    .then(response => response.json())
-    .then(data => {
-        alert(data.message);
-        fetchResults();
-    });
+        uploadForm.addEventListener('submit', function(event) {
+            event.preventDefault();
+            const formData = new FormData(uploadForm);
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultDiv = document.getElementById('upload-result');
+                resultDiv.innerHTML = `<p>Prediction: ${data.prediction}</p>`;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        });
+    }
+
+    if (confirmForm) {
+        confirmForm.addEventListener('submit', function(event) {
+            event.preventDefault();
+            const formData = new FormData(confirmForm);
+            fetch('/confirm', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    hash: formData.get('hash')
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultDiv = document.getElementById('confirm-result');
+                resultDiv.innerHTML = `<p>Status: ${data.status}</p>`;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        });
+    }
 });
-
-function fetchResults() {
-    fetch('/api/results')
-    .then(response => response.json())
-    .then(data => {
-        resultsDiv.innerHTML = '';
-        for (let file of data) {
-            const div = document.createElement('div');
-            div.innerHTML = `File: ${file.file_hash} - Malware Detected: ${file.result.malware_detected}`;
-            const yesNoSelect = document.createElement('select');
-            yesNoSelect.innerHTML = '<option value="yes">Yes</option><option value="no">No</option>';
-            yesNoSelect.onchange = () => submitFeedback(file.file_hash, yesNoSelect.value);
-            div.appendChild(yesNoSelect);
-            resultsDiv.appendChild(div);
-        }
-    });
-}
-
-function submitFeedback(fileHash, feedback) {
-    fetch('/api/feedback', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ file_hash: fileHash, feedback: feedback })
-    })
-    .then(response => response.json())
-    .then(data => {
-        alert(data.message);
-    });
-}
