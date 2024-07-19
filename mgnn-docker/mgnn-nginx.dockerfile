@@ -1,8 +1,7 @@
-# Use the official NGINX image from the Docker Hub
 FROM nginx:alpine
 
-# Copy the NGINX configuration file
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY ./nginx.conf /etc/nginx/conf.d/
 
-# Expose the NGINX port
-EXPOSE 80
+COPY ./static /usr/share/nginx/html
+
+EXPOSE 8080
