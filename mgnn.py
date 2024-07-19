@@ -3,7 +3,7 @@ import hashlib
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, Flatten, BatchNormalization
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
 import os
 from sklearn.model_selection import train_test_split
@@ -12,8 +12,27 @@ import random
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.mixed_precision import experimental as mixed_precision
 from tensorflow.keras.optimizers import Adam
+import requests
+import zipfile
+import io
 
 logging.basicConfig(level=logging.ERROR)
+
+def download_and_extract_csv(url, extract_to='/home/user/full.csv'):
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                z.extractall(path=os.path.dirname(extract_to))
+                for filename in z.namelist():
+                    if filename.endswith('.csv'):
+                        os.rename(os.path.join(os.path.dirname(extract_to), filename), extract_to)
+                        break
+            logging.info(f"Downloaded and extracted CSV to {extract_to}")
+        else:
+            logging.error(f"Failed to download file from {url}, status code: {response.status_code}")
+    except Exception as e:
+        logging.error(f"Error downloading or extracting CSV: {str(e)}")
 
 def load_malicious_hashes_from_csv(csv_path='/home/user/full.csv'):
     hashes = []
@@ -45,26 +64,9 @@ def convert_files_to_hashes(directory):
                 file_hashes.append(file_hash)
     return file_hashes
 
-def binary_to_image(hash_value, data_dir, csv_path, image_dim=256):
-    if len(hash_value) != 64:
-        logging.error("Provided input data is not a valid SHA-256 hash.")
-        return None
-    malicious_hashes = load_malicious_hashes_from_csv(csv_path)
-    benign_hashes = convert_files_to_hashes(data_dir)
-    if hash_value not in malicious_hashes and hash_value not in benign_hashes:
-        logging.error(f"Hash {hash_value} is not from an allowed source.")
-        return None
-    byte_sequence = None
-    for root, _, files in os.walk(data_dir):
-        for file in files:
-            file_path = os.path.join(root, file)
-            with open(file_path, 'rb') as f:
-                content = f.read()
-                if hashlib.sha256(content).hexdigest() == hash_value:
-                    byte_sequence = content
-                    break
-    if byte_sequence is None:
-        return None
+def binary_to_image(file_path, image_dim=256):
+    with open(file_path, 'rb') as f:
+        byte_sequence = f.read()
     int_sequence = np.frombuffer(byte_sequence, dtype=np.uint8)
     desired_length = image_dim * image_dim
     if len(int_sequence) > desired_length:
@@ -132,10 +134,10 @@ def build_model(input_shape):
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
-def train_model():
+def train_model(data_dir):
     policy = mixed_precision.Policy('mixed_float16')
     mixed_precision.set_policy(policy)
-    train_gen, val_gen = load_and_preprocess_data('/home/user/')
+    train_gen, val_gen = load_and_preprocess_data(data_dir)
     model = build_model((256, 256, 3))
     callbacks = [
         EarlyStopping(monitor='val_loss', patience=10, verbose=1),
@@ -192,12 +194,36 @@ def evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, init
         adjust_search_space_based_on_performance(search_space, best_config)
         generation += 1
 
-def main():
+def analyze_file(file_path, data_dir):
+    def binary_to_image(file_path, image_dim=256):
+        with open(file_path, 'rb') as f:
+            byte_sequence = f.read()
+        int_sequence = np.frombuffer(byte_sequence, dtype=np.uint8)
+        desired_length = image_dim * image_dim
+        if len(int_sequence) > desired_length:
+            int_sequence = int_sequence[:desired_length]
+        else:
+            int_sequence = np.pad(int_sequence, (0, desired_length - len(int_sequence)), 'constant')
+        image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
+        return image / 255.0
+    image = binary_to_image(file_path)
+    image = np.expand_dims(image, axis=-1)
+    image = np.expand_dims(image, axis=0)
+    model = load_model(os.path.join(data_dir, 'best_model.h5'))
+    predictions = model.predict(image)
+    predicted_class = np.argmax(predictions, axis=1)[0]
+    result = {
+        'file_path': file_path,
+        'predicted_class': int(predicted_class),
+        'confidence': float(predictions[0][predicted_class])
+    }
+    return result
+
+def main(data_dir):
     data_augmentation = ImageDataGenerator(rotation_range=20, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.1, zoom_range=0.1, horizontal_flip=True, fill_mode='nearest')
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
     learning_rate_scheduler = LearningRateScheduler(lambda epoch: 1e-3 * 10 ** (-epoch / 20))
-    data_dir = '/home/user/'
-    csv_path = '/home/user/full.csv'
+    csv_path = os.path.join(data_dir, 'full.csv')
     image_dim = 256
     test_size = 0.2
     search_space = {
@@ -208,12 +234,12 @@ def main():
         'epochs': [10, 20]
     }
 
+    download_and_extract_csv('https://bazaar.abuse.ch/export/csv/full/', csv_path)
     x_data, y_data = load_samples(data_dir, csv_path, image_dim)
     x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
     x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
     best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
     logging.info(f"Best configuration: {best_config}")
-
     model = build_model(input_shape=(image_dim, image_dim, 1), 
                         num_filters=best_config['num_filters'], 
                         kernel_size=best_config['kernel_size'], 
@@ -225,4 +251,5 @@ def main():
     logging.info(f"Test Loss: {loss}, Test Accuracy: {accuracy}")
 
 if __name__ == "__main__":
-    main()
+    data_dir = '/path/to/upload/folder'
+    main(data_dir)
