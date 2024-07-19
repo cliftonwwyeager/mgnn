@@ -1,15 +1,40 @@
-version: '3'
+version: '3.8'
+
 services:
   redis:
     image: "redis:alpine"
     ports:
       - "6379:6379"
-  web:
-    build: .
-    command: python mgnn-v1.4.7.py
+    environment:
+      - REDIS_PASSWORD=your_redis_password
+    command: redis-server --requirepass your_redis_password
+    volumes:
+      - redis-data:/data
+
+  flask:
+    build:
+      context: .
+      dockerfile: mgnn
     volumes:
       - .:/app
     ports:
       - "5000:5000"
     depends_on:
       - redis
+    environment:
+      - FLASK_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=your_redis_password
+
+  nginx:
+    build:
+      context: .
+      dockerfile: mgnn-nginx
+    ports:
+      - "8080:8080"
+    depends_on:
+      - flask
+
+volumes:
+  redis-data:
