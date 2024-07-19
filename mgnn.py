@@ -2,19 +2,19 @@ import csv
 import hashlib
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, Flatten, BatchNormalization
+from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, BatchNormalization
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
-import os
-from sklearn.model_selection import train_test_split
-import logging
-import random
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.mixed_precision import experimental as mixed_precision
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import SGD
+import os
+import logging
+import random
 import requests
 import zipfile
 import io
+from sklearn.model_selection import train_test_split
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -131,7 +131,7 @@ def build_model(input_shape):
     x = Dropout(0.5)(x)
     outputs = Dense(10, activation='softmax')(x)
     model = Model(inputs=inputs, outputs=outputs)
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
 def train_model(data_dir):
@@ -235,16 +235,18 @@ def main(data_dir):
     }
 
     download_and_extract_csv('https://bazaar.abuse.ch/export/csv/full/', csv_path)
+
     x_data, y_data = load_samples(data_dir, csv_path, image_dim)
     x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
     x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
     best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
     logging.info(f"Best configuration: {best_config}")
+
     model = build_model(input_shape=(image_dim, image_dim, 1), 
                         num_filters=best_config['num_filters'], 
                         kernel_size=best_config['kernel_size'], 
                         dropout_rate=best_config['dropout_rate'])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9, nesterov=True), loss='binary_crossentropy', metrics=['accuracy'])
     model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=best_config['epochs'], batch_size=best_config['batch_size'])
 
     loss, accuracy = model.evaluate(x_test, y_test)
