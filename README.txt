@@ -12,4 +12,4 @@
        ░         ░          ░          ░ 
                                          
 
-Malware detection gated CNN v1.4.9 | Docker Build
+Malware detection gated CNN v1.5.0 | Docker Build
