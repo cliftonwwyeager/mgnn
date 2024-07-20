@@ -1,27 +1,16 @@
-FROM python:3.9-slim
+FROM python:3.9
 
 WORKDIR /mgnn-docker
 
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY . /mgnn-docker
+COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install torch torchvision torchaudio
+# Copy the rest of the application code into the container
+COPY . .
 
-RUN pip install redis
-
-RUN pip install numpy pandas scikit-learn
-
-RUN pip install optuna
-
+# Expose the port the app runs on
 EXPOSE 5000
 
-ENV NAME World
-
+# Run the Flask application
 CMD ["python", "mgnn-flask.py"]
