@@ -1,0 +1,40 @@
+body {
+    background-color: black;
+    color: #00FF00;
+    font-family: monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+}
+
+h1 {
+    font-size: 2em;
+    margin-bottom: 20px;
+}
+
+.upload-box {
+    border: 2px dashed #00FF00;
+    padding: 20px;
+    cursor: pointer;
+    margin-bottom: 20px;
+}
+
+.upload-box.dragover {
+    background-color: rgba(0, 255, 0, 0.1);
+}
+
+button {
+    background-color: #00FF00;
+    border: none;
+    padding: 10px 20px;
+    color: black;
+    font-size: 1em;
+    cursor: pointer;
+}
+
+#results {
+    margin-top: 20px;
+}
