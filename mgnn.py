@@ -6,7 +6,7 @@ from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D,
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.mixed_precision import experimental as mixed_precision
+from tensorflow.keras import mixed_precision
 from tensorflow.keras.optimizers import SGD
 import os
 import logging
@@ -152,7 +152,7 @@ def train_step(model, images, labels, optimizer):
 
 def train_model(data_dir):
     policy = mixed_precision.Policy('mixed_float16')
-    mixed_precision.set_policy(policy)
+    mixed_precision.set_global_policy(policy)
     train_gen, val_gen = load_and_preprocess_data(data_dir)
     model = build_model((256, 256, 3))
     optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
