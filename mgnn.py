@@ -17,6 +17,9 @@ import io
 from sklearn.model_selection import train_test_split
 import redis
 import json
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -24,6 +27,17 @@ redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = os.getenv('REDIS_PORT', 6379)
 redis_password = os.getenv('REDIS_PASSWORD', None)
 redis_client = redis.StrictRedis(host=redis_host, port=int(redis_port), password=redis_password, db=0)
+
+class MGNN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(MGNN, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 def download_and_extract_csv(url, extract_to='/home/user/full.csv'):
     try:
