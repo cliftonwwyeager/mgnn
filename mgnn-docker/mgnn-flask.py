@@ -14,6 +14,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from mgnn import MGNN
 import optuna
+import urllib.request
+import zipfile
+from deap import base, creator, tools, algorithms
+import random
 
 app = Flask(__name__)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -25,6 +29,9 @@ output_dim = 10
 batch_size = 64
 epochs = 20
 learning_rate = 0.001
+val_split = 0.2
+output_dir = '/home/user/mgnn'
+os.makedirs(output_dir, exist_ok=True)
 
 @app.route('/')
 def index():
@@ -39,21 +46,25 @@ def upload_file():
         return jsonify({'error': 'No selected file'})
     if file:
         filename = secure_filename(file.filename)
-        file_path = os.path.join('/path/to/save', filename)
+        file_path = os.path.join(output_dir, filename)
         file.save(file_path)
         hash_value = calculate_hash(file_path)
         X = process_file(file_path)
         model = MGNN(input_dim, best_hidden_dim, output_dim)
-        model.load_state_dict(torch.load('best_model.pth'))
+        model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth')))
         model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             outputs = model(X_tensor)
         predicted_class = torch.argmax(outputs, dim=1).item()
         confidence = torch.softmax(outputs, dim=1).max().item()
-
         redis_client.set(hash_value, json.dumps({'predicted_class': predicted_class, 'confidence': confidence}))
         return jsonify({'predicted_class': predicted_class, 'confidence': confidence})
+
+@app.route('/process', methods=['POST'])
+def process():
+    train_model()
+    return jsonify({'status': 'Model training complete'})
 
 @app.route('/confirm', methods=['GET', 'POST'])
 def confirm():
@@ -73,7 +84,7 @@ def confirm():
 
     prediction = json.loads(prediction)
 
-    csv_file = '/path/to/confirmations.csv'
+    csv_file = os.path.join(output_dir, 'confirmations.csv')
     file_exists = os.path.isfile(csv_file)
     
     with open(csv_file, 'a', newline='') as csvfile:
@@ -104,7 +115,7 @@ def results():
 
 @app.route('/get_results')
 def get_results():
-    csv_file = '/path/to/confirmations.csv'
+    csv_file = os.path.join(output_dir, 'confirmations.csv')
     if not os.path.exists(csv_file):
         return jsonify({'error': 'No results found'})
     
@@ -131,6 +142,7 @@ def calculate_hash(file_path):
         return hashlib.sha256(content).hexdigest()
 
 def process_file(file_path):
+    # Load and preprocess the file
     data = pd.read_csv(file_path)
     X = data.values
     X = StandardScaler().fit_transform(X)
@@ -175,7 +187,7 @@ def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X
     
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
+    
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -186,24 +198,34 @@ def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
-        
         epoch_loss = running_loss / len(train_loader.dataset)
         print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
-
     torch.save(model.state_dict(), os.path.join(data_dir, 'best_model_updated.pth'))
 
-if __name__ == '__main__':
-    data_dir = 'path_to_data'
-    model_path = os.path.join(data_dir, 'best_model.pth')
-    
-    def objective(trial):
-        hidden_dim = trial.suggest_int('hidden_dim', 16, 128)
+def train_model():
+    url = 'https://bazaar.abuse.ch/export/csv/full/'
+    zip_path = os.path.join(output_dir, 'full.zip')
+    csv_path = os.path.join(output_dir, 'full.csv')
+    urllib.request.urlretrieve(url, zip_path)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(output_dir)
+    data = pd.read_csv(csv_path)
+    X = data.iloc[:, :-1].values
+    y = data.iloc[:, -1].values
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+    y = y.astype(int)
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=val_split, random_state=42, stratify=y)
+    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
+    val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.long))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    def evaluate(individual):
+        hidden_dim = individual[0]
+        learning_rate = individual[1]
+
         model = MGNN(input_dim, hidden_dim, output_dim)
-        existing_data = pd.read_csv(os.path.join(data_dir, 'existing_training_data.csv'))
-        existing_X = existing_data.iloc[:, :-1].values
-        existing_y = existing_data.iloc[:, -1].values
-        train_dataset = TensorDataset(torch.tensor(existing_X, dtype=torch.float32), torch.tensor(existing_y, dtype=torch.long))
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -218,21 +240,132 @@ if __name__ == '__main__':
                 optimizer.step()
                 running_loss += loss.item() * inputs.size(0)
 
-            epoch_loss = running_loss / len(train_loader.dataset)
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
 
-        return epoch_loss
+        val_loss /= len(val_loader.dataset)
+        val_accuracy = 100 * correct / total
+        return (val_loss,)
+
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+    creator.create("Individual", list, fitness=creator.FitnessMin)
+
+    toolbox = base.Toolbox()
+    toolbox.register("attr_hidden_dim", random.randint, 16, 128)
+    toolbox.register("attr_learning_rate", random.uniform, 1e-5, 1e-1)
+    toolbox.register("individual", tools.initCycle, creator.Individual, 
+                    (toolbox.attr_hidden_dim, toolbox.attr_learning_rate), n=1)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+    toolbox.register("mate", tools.cxBlend, alpha=0.5)
+    toolbox.register("mutate", tools.mutPolynomialBounded, low=[16, 1e-5], up=[128, 1e-1], eta=0.1, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+    toolbox.register("evaluate", evaluate)
+
+    population = toolbox.population(n=50)
+    ngen = 10
+    cxpb = 0.5
+    mutpb = 0.2
+
+    algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, 
+                        stats=None, halloffame=None, verbose=True)
+
+    best_individual = tools.selBest(population, k=1)[0]
+    print('Best Individual: ', best_individual)
+
+    def objective(trial):
+        hidden_dim = trial.suggest_int('hidden_dim', 16, 128)
+        learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-1)
+
+        model = MGNN(input_dim, hidden_dim, output_dim)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+        for epoch in range(epochs):
+            model.train()
+            running_loss = 0.0
+            for inputs, labels in train_loader:
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item() * inputs.size(0)
+
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        val_loss /= len(val_loader.dataset)
+        val_accuracy = 100 * correct / total
+        return val_loss
 
     study = optuna.create_study(direction='minimize')
     study.optimize(objective, n_trials=50)
     best_trial = study.best_trial
+    print('Best trial:')
+    print('  Loss: {}'.format(best_trial.value))
+    print('  Params: ')
+    for key, value in best_trial.params.items():
+        print('    {}: {}'.format(key, value))
     best_hidden_dim = best_trial.params['hidden_dim']
+    best_learning_rate = best_trial.params['learning_rate']
     model = MGNN(input_dim, best_hidden_dim, output_dim)
-    model.load_state_dict(torch.load(model_path))
-    existing_data = pd.read_csv(os.path.join(data_dir, 'existing_training_data.csv'))
-    existing_X = existing_data.iloc[:, :-1].values
-    existing_y = existing_data.iloc[:, -1].values
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=best_learning_rate)
 
-    confirmation_data = retrieve_confirmations_from_redis()
-    reinforcement_learning_update(data_dir, confirmation_data, model, existing_X, existing_y)
-    
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * inputs.size(0)
+        
+        epoch_loss = running_loss / len(train_loader.dataset)
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
+        
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        
+        val_loss /= len(val_loader.dataset)
+        val_accuracy = 100 * correct / total
+        print(f"Validation Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.2f}%")
+
+    torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
+    print("Training complete.")
+
+if __name__ == '__main__':
     app.run(debug=True)
