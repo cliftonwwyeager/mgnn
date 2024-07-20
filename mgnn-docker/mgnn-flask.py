@@ -43,12 +43,9 @@ def upload_file():
         file.save(file_path)
         hash_value = calculate_hash(file_path)
         X = process_file(file_path)
-
-        # Load the PyTorch model and make prediction
         model = MGNN(input_dim, best_hidden_dim, output_dim)
         model.load_state_dict(torch.load('best_model.pth'))
         model.eval()
-        
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             outputs = model(X_tensor)
