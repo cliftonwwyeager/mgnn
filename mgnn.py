@@ -15,8 +15,15 @@ import requests
 import zipfile
 import io
 from sklearn.model_selection import train_test_split
+import redis
+import json
 
 logging.basicConfig(level=logging.ERROR)
+
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_port = os.getenv('REDIS_PORT', 6379)
+redis_password = os.getenv('REDIS_PASSWORD', None)
+redis_client = redis.StrictRedis(host=redis_host, port=int(redis_port), password=redis_password, db=0)
 
 def download_and_extract_csv(url, extract_to='/home/user/full.csv'):
     try:
@@ -134,17 +141,55 @@ def build_model(input_shape):
     model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
+@tf.function
+def train_step(model, images, labels, optimizer):
+    with tf.GradientTape() as tape:
+        predictions = model(images, training=True)
+        loss = tf.keras.losses.categorical_crossentropy(labels, predictions)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
+
 def train_model(data_dir):
     policy = mixed_precision.Policy('mixed_float16')
     mixed_precision.set_policy(policy)
     train_gen, val_gen = load_and_preprocess_data(data_dir)
     model = build_model((256, 256, 3))
+    optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
     callbacks = [
         EarlyStopping(monitor='val_loss', patience=10, verbose=1),
         ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss', mode='min'),
         LearningRateScheduler(lambda epoch: 1e-3 * 10 ** (-epoch / 20))
     ]
-    model.fit(train_gen, epochs=50, validation_data=val_gen, callbacks=callbacks)
+    
+    @tf.function
+    def distributed_train_step(images, labels):
+        per_replica_losses = strategy.run(train_step, args=(model, images, labels))
+        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
+    
+    strategy = tf.distribute.MirroredStrategy()
+    with strategy.scope():
+        train_ds = tf.data.Dataset.from_generator(
+            lambda: train_gen,
+            output_signature=(
+                tf.TensorSpec(shape=(None, 256, 256, 3), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 10), dtype=tf.float32),
+            )
+        ).batch(32).prefetch(tf.data.experimental.AUTOTUNE)
+        
+        val_ds = tf.data.Dataset.from_generator(
+            lambda: val_gen,
+            output_signature=(
+                tf.TensorSpec(shape=(None, 256, 256, 3), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 10), dtype=tf.float32),
+            )
+        ).batch(32).prefetch(tf.data.experimental.AUTOTUNE)
+
+        for epoch in range(50):
+            for images, labels in train_ds:
+                loss = distributed_train_step(images, labels)
+            val_loss, val_accuracy = model.evaluate(val_ds)
+            print(f"Epoch {epoch + 1}: Loss: {loss}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}")
 
 def random_configuration(search_space):
     return {param: random.choice(values) for param, values in search_space.items()}
@@ -219,6 +264,39 @@ def analyze_file(file_path, data_dir):
     }
     return result
 
+def retrieve_confirmations_from_redis():
+    accurate_predictions = redis_client.smembers('accurate_predictions')
+    confirmation_data = []
+    for record in accurate_predictions:
+        confirmation_data.append(json.loads(record))
+    return confirmation_data
+
+def reinforcement_learning_update(data_dir, confirmation_data):
+    model = load_model(os.path.join(data_dir, 'best_model.h5'))
+    optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
+    images = []
+    labels = []
+    for data in confirmation_data:
+        hash_value = data['hash']
+        predicted_class = data['predicted_class']
+        image_path = os.path.join(data_dir, 'uploads', f"{hash_value}.bin")
+        image = binary_to_image(image_path)
+        image = np.expand_dims(image, axis=-1)
+        image = np.expand_dims(image, axis=0)
+        images.append(image)
+        labels.append(predicted_class)
+    images = np.vstack(images)
+    labels = tf.keras.utils.to_categorical(labels, num_classes=10)
+    for epoch in range(10):
+        with tf.GradientTape() as tape:
+            predictions = model(images, training=True)
+            loss = tf.keras.losses.categorical_crossentropy(labels, predictions)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        print(f"Fine-tuning epoch {epoch + 1}: Loss: {loss.numpy().mean()}")
+
+    model.save(os.path.join(data_dir, 'best_model_updated.h5'))
+
 def main(data_dir):
     data_augmentation = ImageDataGenerator(rotation_range=20, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.1, zoom_range=0.1, horizontal_flip=True, fill_mode='nearest')
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
@@ -235,22 +313,22 @@ def main(data_dir):
     }
 
     download_and_extract_csv('https://bazaar.abuse.ch/export/csv/full/', csv_path)
-
     x_data, y_data = load_samples(data_dir, csv_path, image_dim)
     x_train, x_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size, random_state=42)
     x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
     best_config = evolutionary_optimization_with_feedback(x_train, y_train, x_val, y_val, search_space)
     logging.info(f"Best configuration: {best_config}")
-
     model = build_model(input_shape=(image_dim, image_dim, 1), 
                         num_filters=best_config['num_filters'], 
                         kernel_size=best_config['kernel_size'], 
                         dropout_rate=best_config['dropout_rate'])
     model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9, nesterov=True), loss='binary_crossentropy', metrics=['accuracy'])
     model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=best_config['epochs'], batch_size=best_config['batch_size'])
-
     loss, accuracy = model.evaluate(x_test, y_test)
     logging.info(f"Test Loss: {loss}, Test Accuracy: {accuracy}")
+    confirmation_data = retrieve_confirmations_from_redis()
+    if confirmation_data:
+        reinforcement_learning_update(data_dir, confirmation_data)
 
 if __name__ == "__main__":
     data_dir = '/path/to/upload/folder'
