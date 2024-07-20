@@ -24,6 +24,7 @@ redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = os.getenv('REDIS_PORT', 6379)
 redis_password = os.getenv('REDIS_PASSWORD', None)
 redis_client = redis.StrictRedis(host=redis_host, port=int(redis_port), password=redis_password, db=0)
+
 input_dim = 100
 output_dim = 10
 batch_size = 64
@@ -50,14 +51,17 @@ def upload_file():
         file.save(file_path)
         hash_value = calculate_hash(file_path)
         X = process_file(file_path)
+
         model = MGNN(input_dim, best_hidden_dim, output_dim)
         model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth')))
         model.eval()
+
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             outputs = model(X_tensor)
         predicted_class = torch.argmax(outputs, dim=1).item()
         confidence = torch.softmax(outputs, dim=1).max().item()
+
         redis_client.set(hash_value, json.dumps({'predicted_class': predicted_class, 'confidence': confidence}))
         return jsonify({'predicted_class': predicted_class, 'confidence': confidence})
 
@@ -74,7 +78,7 @@ def confirm():
     hash_value = data.get('hash')
     is_correct = data.get('is_correct')
     filename = data.get('filename')
-    
+
     if not hash_value or is_correct is None or not filename:
         return jsonify({'error': 'Invalid input'})
 
@@ -86,14 +90,14 @@ def confirm():
 
     csv_file = os.path.join(output_dir, 'confirmations.csv')
     file_exists = os.path.isfile(csv_file)
-    
+
     with open(csv_file, 'a', newline='') as csvfile:
         fieldnames = ['filename', 'hash', 'predicted_class', 'confidence', 'is_correct', 'timestamp']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        
+
         if not file_exists:
             writer.writeheader()
-        
+
         writer.writerow({
             'filename': filename,
             'hash': hash_value,
@@ -118,13 +122,13 @@ def get_results():
     csv_file = os.path.join(output_dir, 'confirmations.csv')
     if not os.path.exists(csv_file):
         return jsonify({'error': 'No results found'})
-    
+
     results = []
     with open(csv_file, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
             results.append(row)
-    
+
     return jsonify(results)
 
 def submit_positive_result(hash_value, predicted_class):
@@ -142,7 +146,6 @@ def calculate_hash(file_path):
         return hashlib.sha256(content).hexdigest()
 
 def process_file(file_path):
-    # Load and preprocess the file
     data = pd.read_csv(file_path)
     X = data.values
     X = StandardScaler().fit_transform(X)
@@ -184,10 +187,10 @@ def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X
 
     train_dataset = TensorDataset(torch.tensor(combined_X, dtype=torch.float32), torch.tensor(combined_y, dtype=torch.long))
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    
+
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -263,7 +266,7 @@ def train_model():
     toolbox = base.Toolbox()
     toolbox.register("attr_hidden_dim", random.randint, 16, 128)
     toolbox.register("attr_learning_rate", random.uniform, 1e-5, 1e-1)
-    toolbox.register("individual", tools.initCycle, creator.Individual, 
+    toolbox.register("individual", tools.initCycle, creator.Individual,
                     (toolbox.attr_hidden_dim, toolbox.attr_learning_rate), n=1)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
@@ -277,7 +280,7 @@ def train_model():
     cxpb = 0.5
     mutpb = 0.2
 
-    algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, 
+    algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen,
                         stats=None, halloffame=None, verbose=True)
 
     best_individual = tools.selBest(population, k=1)[0]
@@ -343,10 +346,10 @@ def train_model():
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
-        
+
         epoch_loss = running_loss / len(train_loader.dataset)
         print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
-        
+
         model.eval()
         val_loss = 0.0
         correct = 0
@@ -359,7 +362,7 @@ def train_model():
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
-        
+
         val_loss /= len(val_loader.dataset)
         val_accuracy = 100 * correct / total
         print(f"Validation Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.2f}%")
