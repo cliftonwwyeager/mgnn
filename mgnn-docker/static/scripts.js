@@ -1,3 +1,22 @@
+function uploadFile() {
+    var formData = new FormData();
+    var fileInput = document.getElementById('fileInput');
+    var file = fileInput.files[0];
+    formData.append('file', file);
+
+    fetch('/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById('result').innerText = `Predicted Class: ${data.predicted_class}, Confidence: ${data.confidence}`;
+    })
+    .catch(error => {
+        console.error('Error:', error);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     const uploadBox = document.getElementById('upload-box');
     const uploadForm = document.getElementById('upload-form');
