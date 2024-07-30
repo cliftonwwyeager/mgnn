@@ -1,4 +1,7 @@
 import csv
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+from torch.nn import functional as F
 import hashlib
 import numpy as np
 import tensorflow as tf
@@ -347,3 +350,11 @@ def main(data_dir):
 if __name__ == "__main__":
     data_dir = '/path/to/upload/folder'
     main(data_dir)
+
+def reward_function(tp, fp, fn):
+    alpha = 1.0
+    beta = 0.5
+    gamma = 0.5
+    return alpha * tp - beta * fp - gamma * fn
+   
+scheduler.step()
