@@ -46,10 +46,12 @@ def evaluate(individual):
     model = MGNN(input_dim, hidden_dim, output_dim)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)
 
     for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
+    scheduler.step()
+    model.train()
+    running_loss = 0.0
         for inputs, labels in train_loader:
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -108,8 +110,10 @@ def objective(trial):
     model = MGNN(input_dim, hidden_dim, output_dim)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)
 
     for epoch in range(epochs):
+    scheduler.step()
         model.train()
         running_loss = 0.0
         for inputs, labels in train_loader:
@@ -150,8 +154,10 @@ best_learning_rate = best_trial.params['learning_rate']
 model = MGNN(input_dim, best_hidden_dim, output_dim)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=best_learning_rate)
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)
 
 for epoch in range(epochs):
+    scheduler.step()
     model.train()
     running_loss = 0.0
     for inputs, labels in train_loader:
