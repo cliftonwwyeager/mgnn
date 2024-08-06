@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MGNN Malware Detection</title>
+     <title>MGNN Malware Detection</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
@@ -19,33 +19,16 @@
         ░      ░   ░ ░   ░    ░   ░ ░    ░   ░ ░ 
                ░         ░          ░          ░ 
     </pre>
-    <div class="upload-box" id="upload-box">
-        Click or drag and drop files here to upload
+    <div class="container">
+        <h1>MGNN</h1>
+        <div id="upload-box" class="upload-box">
+            Drag and drop files here or click to upload
+        </div>
+        <input type="file" id="file-input" multiple style="display: none;">
+        <div id="upload-result" class="upload-result"></div>
+        <div id="result-container" class="result-container"></div>
     </div>
-    <form id="upload-form" method="post" enctype="multipart/form-data" style="display:none;">
-        <input type="file" name="file" id="file-input" required>
-        <button type="submit">Upload</button>
-    </form>
-    <button id="upload-btn">Upload File</button>
-    <div id="upload-result"></div>
-    <div class="progress-bar" id="progress-bar" style="display: none;">
-        <div class="progress" id="progress"></div>
-        <span id="progress-text"></span>
-    </div>
-    <h2>Confirm Prediction</h2>
-    <form id="confirm-form" method="post">
-        <label for="hash-input">Hash:</label>
-        <input type="text" name="hash" id="hash-input" required>
-        <label for="filename-input">Filename:</label>
-        <input type="text" name="filename" id="filename-input" required>
-        <label for="is-correct-select">Is Correct:</label>
-        <select name="is_correct" id="is-correct-select" required>
-            <option value="true">Correct</option>
-            <option value="false">Incorrect</option>
-        </select>
-        <button type="submit">Confirm</button>
-    </form>
-    <div id="confirm-result"></div>
-    <script src="{{ url_for('static', filename='scripts.js') }}"></script>
+
+    <script src="script.js"></script>
 </body>
 </html>
