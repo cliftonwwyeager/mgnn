@@ -1,6 +1,6 @@
 version: 2
 updates:
   - package-ecosystem: "pip"
-    directory: "/eudaemons-docker"
+    directory: "/mgnn-docker"
     schedule:
       interval: "weekly"
