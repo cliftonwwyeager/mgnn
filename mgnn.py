@@ -42,6 +42,28 @@ class MGNN(nn.Module):
         x = self.fc2(x)
         return x
 
+# Implementing backpropagation with loss calculation and optimizer step
+def train_model_mgnn(model, optimizer, criterion, train_loader, epochs=20):
+    model.train()
+    for epoch in range(epochs):
+        running_loss = 0.0
+        for i, data in enumerate(train_loader, 0):
+            inputs, labels = data
+
+            optimizer.zero_grad()
+
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            if i % 100 == 99:
+                print(f"[{epoch + 1}, {i + 1}] loss: {running_loss / 100:.3f}")
+                running_loss = 0.0
+
+    print('Finished Training')
+
 def download_and_extract_csv(url, extract_to='/home/user/full.csv'):
     try:
         response = requests.get(url)
