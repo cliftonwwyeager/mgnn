@@ -42,7 +42,6 @@ class MGNN(nn.Module):
         x = self.fc2(x)
         return x
 
-# Implementing backpropagation with loss calculation and optimizer step
 def train_model_mgnn(model, optimizer, criterion, train_loader, epochs=20):
     model.train()
     for epoch in range(epochs):
