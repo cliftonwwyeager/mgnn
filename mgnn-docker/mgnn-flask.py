@@ -18,18 +18,19 @@ import urllib.request
 import zipfile
 from deap import base, creator, tools, algorithms
 import random
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import TfidfVectorizer
 
-app = Flask(__name__)
+app = Flask(__MGNN__)
+
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = os.getenv('REDIS_PORT', 6379)
 redis_password = os.getenv('REDIS_PASSWORD', None)
 redis_client = redis.StrictRedis(host=redis_host, port=int(redis_port), password=redis_password, db=0)
-
 input_dim = 100
 output_dim = 10
 batch_size = 64
 epochs = 20
-learning_rate = 0.001
 val_split = 0.2
 output_dir = '/home/user/mgnn'
 os.makedirs(output_dir, exist_ok=True)
@@ -52,8 +53,7 @@ def upload_file():
         hash_value = calculate_hash(file_path)
         X = process_file(file_path)
 
-        model = MGNN(input_dim, best_hidden_dim, output_dim)
-        model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth')))
+        model = load_model()
         model.eval()
 
         X_tensor = torch.tensor(X, dtype=torch.float32)
@@ -87,26 +87,8 @@ def confirm():
         return jsonify({'error': 'No prediction found for the provided hash'})
 
     prediction = json.loads(prediction)
-
-    csv_file = os.path.join(output_dir, 'confirmations.csv')
-    file_exists = os.path.isfile(csv_file)
-
-    with open(csv_file, 'a', newline='') as csvfile:
-        fieldnames = ['filename', 'hash', 'predicted_class', 'confidence', 'is_correct', 'timestamp']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow({
-            'filename': filename,
-            'hash': hash_value,
-            'predicted_class': prediction['predicted_class'],
-            'confidence': prediction['confidence'],
-            'is_correct': is_correct,
-            'timestamp': datetime.now().isoformat()
-        })
-
+    record_confirmation(filename, hash_value, prediction, is_correct)
+    
     if is_correct:
         submit_positive_result(hash_value, prediction['predicted_class'])
 
@@ -147,18 +129,36 @@ def calculate_hash(file_path):
 
 def process_file(file_path):
     data = pd.read_csv(file_path)
-    X = data.values
-    X = StandardScaler().fit_transform(X)
-    return X
+    tfidf_vectorizer = TfidfVectorizer(max_features=5000)
+    tfidf_matrix = tfidf_vectorizer.fit_transform(data.apply(lambda x: ' '.join(x.astype(str)), axis=1))
+    pca = PCA(n_components=input_dim)
+    X = pca.fit_transform(tfidf_matrix.toarray())
+    return StandardScaler().fit_transform(X)
 
-def load_new_data(file_hash, predicted_class, data_dir):
-    file_path = os.path.join(data_dir, f"{file_hash}.csv")
-    if os.path.exists(file_path):
-        data = pd.read_csv(file_path)
-        X = data.values
-        y = np.full((X.shape[0],), predicted_class, dtype=np.int64)
-        return X, y
-    return None, None
+def load_model():
+    model = MGNN(input_dim, best_hidden_dim, output_dim)
+    model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth')))
+    return model
+
+def record_confirmation(filename, hash_value, prediction, is_correct):
+    csv_file = os.path.join(output_dir, 'confirmations.csv')
+    file_exists = os.path.isfile(csv_file)
+
+    with open(csv_file, 'a', newline='') as csvfile:
+        fieldnames = ['filename', 'hash', 'predicted_class', 'confidence', 'is_correct', 'timestamp']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow({
+            'filename': filename,
+            'hash': hash_value,
+            'predicted_class': prediction['predicted_class'],
+            'confidence': prediction['confidence'],
+            'is_correct': is_correct,
+            'timestamp': datetime.now().isoformat()
+        })
 
 def add_new_data_to_training_set(data_dir, confirmation_data):
     new_X = []
@@ -178,12 +178,8 @@ def add_new_data_to_training_set(data_dir, confirmation_data):
 
 def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X, existing_y):
     new_X, new_y = add_new_data_to_training_set(data_dir, confirmation_data)
-    if new_X is not None:
-        combined_X = np.vstack([existing_X, new_X])
-        combined_y = np.concatenate([existing_y, new_y])
-    else:
-        combined_X = existing_X
-        combined_y = existing_y
+    combined_X = np.vstack([existing_X, new_X]) if new_X is not None else existing_X
+    combined_y = np.concatenate([existing_y, new_y]) if new_y is not None else existing_y
 
     train_dataset = TensorDataset(torch.tensor(combined_X, dtype=torch.float32), torch.tensor(combined_y, dtype=torch.long))
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -213,11 +209,14 @@ def train_model():
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(output_dir)
     data = pd.read_csv(csv_path)
-    X = data.iloc[:, :-1].values
+    tfidf_vectorizer = TfidfVectorizer(max_features=5000)
+    tfidf_matrix = tfidf_vectorizer.fit_transform(data.iloc[:, :-1].apply(lambda x: ' '.join(x.astype(str)), axis=1))
+    pca = PCA(n_components=input_dim)
+    X = pca.fit_transform(tfidf_matrix.toarray())
     y = data.iloc[:, -1].values
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
+    X = StandardScaler().fit_transform(X)
     y = y.astype(int)
+
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=val_split, random_state=42, stratify=y)
     train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
     val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.long))
