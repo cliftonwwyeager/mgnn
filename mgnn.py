@@ -5,12 +5,15 @@ from torch.nn import functional as F
 import hashlib
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv2D, Multiply, GlobalMaxPooling2D, Dense, Dropout, BatchNormalization
+from tensorflow.keras.layers import Input, Multiply, GlobalMaxPooling2D, Dense, Dropout, BatchNormalization
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras import mixed_precision
-from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.applications import EfficientNetB0, MobileNetV3Small
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import TfidfVectorizer
 import os
 import logging
 import random
@@ -151,7 +154,7 @@ def load_and_preprocess_data(directory, img_size=(256, 256), batch_size=32, vali
 
 def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
     def block(x):
-        conv = Conv2D(filters, kernel_size, padding='same', strides=stride)(x)
+        conv = MobileNetV3Small(input_shape=x.shape[1:], include_top=False, weights='imagenet')(x) if filters <= 32 else EfficientNetB0(input_shape=x.shape[1:], include_top=False, weights='imagenet')(x)
         conv = BatchNormalization()(conv)
         conv = tf.keras.activations.relu(conv)
         conv = Dropout(dropout_rate)(conv)
@@ -165,10 +168,7 @@ def GatedCNNBlock(filters, kernel_size, stride=(1, 1), dropout_rate=0.3):
 
 def build_model(input_shape):
     inputs = Input(shape=input_shape)
-    x = Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
-    x = BatchNormalization()(x)
-    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
-    x = BatchNormalization()(x)
+    x = GatedCNNBlock(32, (3, 3))(inputs)
     x = GlobalMaxPooling2D()(x)
     x = Dense(128, activation='relu')(x)
     x = Dropout(0.5)(x)
@@ -176,7 +176,7 @@ def build_model(input_shape):
     x = Dropout(0.5)(x)
     outputs = Dense(10, activation='softmax')(x)
     model = Model(inputs=inputs, outputs=outputs)
-    model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=Adam(learning_rate=1e-4), loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
 @tf.function
@@ -193,7 +193,7 @@ def train_model(data_dir):
     mixed_precision.set_global_policy(policy)
     train_gen, val_gen = load_and_preprocess_data(data_dir)
     model = build_model((256, 256, 3))
-    optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
+    optimizer = Adam(learning_rate=1e-4)
     callbacks = [
         EarlyStopping(monitor='val_loss', patience=10, verbose=1),
         ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss', mode='min'),
@@ -311,7 +311,7 @@ def retrieve_confirmations_from_redis():
 
 def reinforcement_learning_update(data_dir, confirmation_data):
     model = load_model(os.path.join(data_dir, 'best_model.h5'))
-    optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
+    optimizer = Adam(learning_rate=1e-4)
     images = []
     labels = []
     for data in confirmation_data:
