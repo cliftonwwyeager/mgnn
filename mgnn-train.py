@@ -15,11 +15,14 @@ import os
 import redis
 from mgnn import MGNN
 from synthetic_data_generation import generate_obfuscated_samples, generate_random_obfuscation, generate_pseudo_code
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD', None)
 r = redis.StrictRedis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
+
 input_dim = 100
 output_dim = 10
 batch_size = 64
@@ -34,11 +37,11 @@ urllib.request.urlretrieve(url, zip_path)
 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
     zip_ref.extractall(output_dir)
 data = pd.read_csv(csv_path)
-X = data.iloc[:, :-1].values
+tfidf_vectorizer = TfidfVectorizer(max_features=5000)
+tfidf_matrix = tfidf_vectorizer.fit_transform(data.iloc[:, :-1].apply(lambda x: ' '.join(x.astype(str)), axis=1))
+pca = PCA(n_components=input_dim)
+X = pca.fit_transform(tfidf_matrix.toarray())
 y = data.iloc[:, -1].values
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
-y = y.astype(int)
 obfuscated_samples = generate_obfuscated_samples(X, y)
 random_obfuscation = generate_random_obfuscation(X, num_samples=5000)
 pseudo_code_samples = generate_pseudo_code(num_samples=5000, input_dim=input_dim)
@@ -53,7 +56,6 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 def write_to_redis(key, value):
-    """Helper function to write data to Redis."""
     r.set(key, value)
 
 def evaluate(individual):
@@ -75,6 +77,7 @@ def evaluate(individual):
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
+
     model.eval()
     val_loss = 0.0
     correct = 0
@@ -89,9 +92,10 @@ def evaluate(individual):
             correct += (predicted == labels).sum().item()
     val_loss /= len(val_loader.dataset)
     val_accuracy = 100 * correct / total
+
     write_to_redis(f"val_loss_{hidden_dim}_{learning_rate}", val_loss)
     write_to_redis(f"val_accuracy_{hidden_dim}_{learning_rate}", val_accuracy)
-    
+
     return (val_loss,)
 
 creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
@@ -126,6 +130,7 @@ def objective(trial):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    
     for epoch in range(epochs):
         scheduler.step()
         model.train()
@@ -137,6 +142,7 @@ def objective(trial):
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
+
     model.eval()
     val_loss = 0.0
     correct = 0
@@ -151,7 +157,7 @@ def objective(trial):
             correct += (predicted == labels).sum().item()
     val_loss /= len(val_loader.dataset)
     val_accuracy = 100 * correct / total
-    
+
     write_to_redis(f"trial_{trial.number}_hidden_dim", hidden_dim)
     write_to_redis(f"trial_{trial.number}_learning_rate", learning_rate)
     write_to_redis(f"trial_{trial.number}_val_loss", val_loss)
@@ -162,6 +168,7 @@ def objective(trial):
 study = optuna.create_study(direction='minimize')
 study.optimize(objective, n_trials=50)
 best_trial = study.best_trial
+
 write_to_redis("optuna_best_trial_hidden_dim", best_trial.params['hidden_dim'])
 write_to_redis("optuna_best_trial_learning_rate", best_trial.params['learning_rate'])
 write_to_redis("optuna_best_trial_loss", best_trial.value)
@@ -193,6 +200,7 @@ for epoch in range(epochs):
     epoch_loss = running_loss / len(train_loader.dataset)
     write_to_redis(f"final_epoch_{epoch+1}_loss", epoch_loss)
     print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
+
     model.eval()
     val_loss = 0.0
     correct = 0
