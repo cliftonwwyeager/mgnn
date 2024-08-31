@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from mgnn import MGNN
+from mgnn_with_td import MGNNWithTD
 import optuna
 import urllib.request
 import zipfile
@@ -136,7 +136,7 @@ def process_file(file_path):
     return StandardScaler().fit_transform(X)
 
 def load_model():
-    model = MGNN(input_dim, best_hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, best_hidden_dim, output_dim)
     model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth')))
     return model
 
@@ -188,7 +188,7 @@ def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     for epoch in range(epochs):
-        model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
         running_loss = 0.0
         for inputs, labels in train_loader:
             optimizer.zero_grad()
@@ -202,6 +202,26 @@ def reinforcement_learning_update(data_dir, confirmation_data, model, existing_X
     torch.save(model.state_dict(), os.path.join(data_dir, 'best_model_updated.pth'))
 
 def train_model():
+
+import influxdb_client
+from influxdb_client.client.write_api import SYNCHRONOUS
+
+influxdb_url = os.getenv('INFLUXDB_URL')
+token = os.getenv('INFLUXDB_TOKEN')
+org = os.getenv('INFLUXDB_ORG')
+bucket = os.getenv('INFLUXDB_BUCKET')
+
+client = influxdb_client.InfluxDBClient(url=influxdb_url, token=token, org=org)
+write_api = client.write_api(write_options=SYNCHRONOUS)
+
+def write_metrics(epoch, loss, accuracy):
+    point = influxdb_client.Point("training_metrics") \
+        .tag("model", "MGNNWithTD") \
+        .field("epoch", epoch) \
+        .field("loss", loss) \
+        .field("accuracy", accuracy)
+    write_api.write(bucket=bucket, org=org, record=point)
+
     url = 'https://bazaar.abuse.ch/export/csv/full/'
     zip_path = os.path.join(output_dir, 'full.zip')
     csv_path = os.path.join(output_dir, 'full.csv')
@@ -227,12 +247,12 @@ def train_model():
         hidden_dim = individual[0]
         learning_rate = individual[1]
 
-        model = MGNN(input_dim, hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, best_hidden_dim, output_dim)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
         for epoch in range(epochs):
-            model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
             running_loss = 0.0
             for inputs, labels in train_loader:
                 optimizer.zero_grad()
@@ -289,12 +309,12 @@ def train_model():
         hidden_dim = trial.suggest_int('hidden_dim', 16, 128)
         learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-1)
 
-        model = MGNN(input_dim, hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, best_hidden_dim, output_dim)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
         for epoch in range(epochs):
-            model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
             running_loss = 0.0
             for inputs, labels in train_loader:
                 optimizer.zero_grad()
@@ -331,12 +351,12 @@ def train_model():
         print('    {}: {}'.format(key, value))
     best_hidden_dim = best_trial.params['hidden_dim']
     best_learning_rate = best_trial.params['learning_rate']
-    model = MGNN(input_dim, best_hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, best_hidden_dim, output_dim)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=best_learning_rate)
 
     for epoch in range(epochs):
-        model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
         running_loss = 0.0
         for inputs, labels in train_loader:
             optimizer.zero_grad()
