@@ -13,9 +13,28 @@ import urllib.request
 import zipfile
 import os
 import redis
-from mgnn import MGNN
+from mgnn_with_td import MGNNWithTD
 from synthetic_data_generation import generate_obfuscated_samples, generate_random_obfuscation, generate_pseudo_code
 from sklearn.decomposition import PCA
+import influxdb_client
+from influxdb_client.client.write_api import SYNCHRONOUS
+
+influxdb_url = os.getenv('INFLUXDB_URL')
+token = os.getenv('INFLUXDB_TOKEN')
+org = os.getenv('INFLUXDB_ORG')
+bucket = os.getenv('INFLUXDB_BUCKET')
+
+client = influxdb_client.InfluxDBClient(url=influxdb_url, token=token, org=org)
+write_api = client.write_api(write_options=SYNCHRONOUS)
+
+def write_metrics(epoch, loss, accuracy):
+    point = influxdb_client.Point("training_metrics") \
+        .tag("model", "MGNN") \
+        .field("epoch", epoch) \
+        .field("loss", loss) \
+        .field("accuracy", accuracy)
+    write_api.write(bucket=bucket, org=org, record=point)
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -61,14 +80,14 @@ def write_to_redis(key, value):
 def evaluate(individual):
     hidden_dim = individual[0]
     learning_rate = individual[1]
-    model = MGNN(input_dim, hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, hidden_dim, output_dim)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
     for epoch in range(epochs):
         scheduler.step()
-        model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
         running_loss = 0.0
         for inputs, labels in train_loader:
             optimizer.zero_grad()
@@ -126,14 +145,14 @@ print('Best Individual: ', best_individual)
 def objective(trial):
     hidden_dim = trial.suggest_int('hidden_dim', 16, 128)
     learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-1)
-    model = MGNN(input_dim, hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, hidden_dim, output_dim)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     
     for epoch in range(epochs):
         scheduler.step()
-        model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
         running_loss = 0.0
         for inputs, labels in train_loader:
             optimizer.zero_grad()
@@ -181,14 +200,14 @@ for key, value in best_trial.params.items():
 
 best_hidden_dim = best_trial.params['hidden_dim']
 best_learning_rate = best_trial.params['learning_rate']
-model = MGNN(input_dim, best_hidden_dim, output_dim)
+model = MGNNWithTD(input_dim, hidden_dim, output_dim)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=best_learning_rate)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
 for epoch in range(epochs):
     scheduler.step()
-    model.train()
+model.train_with_td(optimizer, criterion, train_loader, epochs)
     running_loss = 0.0
     for inputs, labels in train_loader:
         optimizer.zero_grad()
@@ -198,6 +217,7 @@ for epoch in range(epochs):
         optimizer.step()
         running_loss += loss.item() * inputs.size(0)
     epoch_loss = running_loss / len(train_loader.dataset)
+    write_metrics(epoch+1, epoch_loss, val_accuracy)
     write_to_redis(f"final_epoch_{epoch+1}_loss", epoch_loss)
     print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
 
