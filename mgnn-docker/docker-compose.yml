@@ -36,5 +36,42 @@ services:
     depends_on:
       - flask
 
+    mgnn_app:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=my-token
+      - INFLUXDB_ORG=my-org
+      - INFLUXDB_BUCKET=my-bucket
+
+  influxdb:
+    image: influxdb:2.1
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    environment:
+      - INFLUXDB_ADMIN_USER=admin
+      - INFLUXDB_ADMIN_PASSWORD=admin123
+      - INFLUXDB_BUCKET=my-bucket
+      - INFLUXDB_ORG=my-org
+      - INFLUXDB_TOKEN=my-token
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  influxdb-data:
+  grafana-data:
+
 volumes:
   redis-data:
