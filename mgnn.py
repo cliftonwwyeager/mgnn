@@ -379,3 +379,36 @@ def reward_function(tp, fp, fn):
     return alpha * tp - beta * fp - gamma * fn
    
 scheduler.step()
+
+class MGNNWithTD(MGNN):
+    def __init__(self, input_dim, hidden_dim, output_dim, gamma=0.99):
+        super(MGNNWithTD, self).__init__(input_dim, hidden_dim, output_dim)
+        self.gamma = gamma
+
+    def forward(self, x, target=None, reward=None):
+        x = F.relu(self.fc1(x))
+        output = self.fc2(x)
+        if target is not None and reward is not None:
+            td_error = reward + self.gamma * target - output
+            output = output + td_error
+
+        return output
+
+    def train_with_td(self, optimizer, criterion, train_loader, epochs=20):
+        for epoch in range(epochs):
+            running_loss = 0.0
+            for i, (inputs, labels) in enumerate(train_loader, 0):
+                optimizer.zero_grad()
+                outputs = self.forward(inputs)
+                target = torch.max(outputs, 1)[0].detach()
+                reward = (outputs.argmax(dim=1) == labels).float()
+                td_outputs = self.forward(inputs, target=target, reward=reward)
+                loss = criterion(td_outputs, labels)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+                if i % 100 == 99:
+                    print(f'[Epoch {epoch + 1}, Batch {i + 1}] loss: {running_loss / 100:.3f}')
+                    running_loss = 0.0
+
+        print('Finished TD Learning Training')
