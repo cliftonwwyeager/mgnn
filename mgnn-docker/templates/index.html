@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+     <title>MGNN Malware Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>MGNN Malware Detection</h1>
+    <pre>
+        ███▄ ▄███▓  ▄████  ███▄    █  ███▄    █ 
+        ▓██▒▀█▀ ██▒ ██▒ ▀█▒ ██ ▀█   █  ██ ▀█   █ 
+        ▓██    ▓██░▒██░▄▄▄░▓██  ▀█ ██▒▓██  ▀█ ██▒
+        ▒██    ▒██ ░▓█  ██▓▓██▒  ▐▌██▒▓██▒  ▐▌██▒
+        ▒██▒   ░██▒░▒▓███▀▒▒██░   ▓██░▒██░   ▓██░
+        ░ ▒░   ░  ░ ░▒   ▒ ░ ▒░   ▒ ▒ ░ ▒░   ▒ ▒ 
+        ░  ░      ░  ░   ░ ░ ░░   ░ ▒░░ ░░   ░ ▒░
+        ░      ░   ░ ░   ░    ░   ░ ░    ░   ░ ░ 
+               ░         ░          ░          ░ 
+    </pre>
+    <div class="container">
+        <h1>MGNN</h1>
+        <div id="upload-box" class="upload-box">
+            Drag and drop files here or click to upload
+        </div>
+        <input type="file" id="file-input" multiple style="display: none;">
+        <div id="upload-result" class="upload-result"></div>
+        <div id="result-container" class="result-container"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
