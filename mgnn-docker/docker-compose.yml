@@ -36,16 +36,6 @@ services:
     depends_on:
       - flask
 
-  mgnn_app:
-    build: .
-    ports:
-      - "5000:5000"
-    environment:
-      - INFLUXDB_URL=http://influxdb:8086
-      - INFLUXDB_TOKEN=my-token
-      - INFLUXDB_ORG=my-org
-      - INFLUXDB_BUCKET=my-bucket
-
   influxdb:
     image: influxdb:2.1
     ports:
