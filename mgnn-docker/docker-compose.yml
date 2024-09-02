@@ -36,7 +36,7 @@ services:
     depends_on:
       - flask
 
-    mgnn_app:
+  mgnn_app:
     build: .
     ports:
       - "5000:5000"
@@ -72,6 +72,4 @@ services:
 volumes:
   influxdb-data:
   grafana-data:
-
-volumes:
   redis-data:
