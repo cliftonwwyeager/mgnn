@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload File for Malware Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>MGNN Malware Detection</h1>
+    <div class="upload-box" id="upload-box">
+        Click or drag and drop files here to upload
+    </div>
+    <form id="upload-form" method="post" enctype="multipart/form-data" style="display:none;">
+        <input type="file" name="file" id="file-input" required>
+        <button type="submit">Upload</button>
+    </form>
+    <button id="upload-btn">Upload File</button>
+    <div id="upload-result"></div>
+    <div class="progress-bar" id="progress-bar" style="display: none;">
+        <div class="progress" id="progress"></div>
+        <span id="progress-text"></span>
+    </div>
+    <script src="{{ url_for('static', filename='scripts.js') }}"></script>
+</body>
+</html>
