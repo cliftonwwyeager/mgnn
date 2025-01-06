@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>System Status</title>
+    <style>
+    .stats-box {
+      border: 1px solid #ccc;
+      padding: 15px;
+      margin: 5px;
+      display: inline-block;
+      width: 150px;
+      text-align: center;
+    }
+    #logsContainer {
+      width: 80%;
+      height: 200px;
+      border: 1px solid #ccc;
+      margin: 10px 0;
+      overflow-y: scroll; /* auto-scroll box */
+    }
+    </style>
+</head>
+<body>
+    <h1>System Status</h1>
+    <div id="statsContainer">
+      <div class="stats-box">
+         <h4>Malware Count</h4>
+         <span id="malwareCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Ingested Files</h4>
+         <span id="ingestCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Elastic Exports</h4>
+         <span id="elasticCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Cortex XSIAM</h4>
+         <span id="cortexCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Splunk Exports</h4>
+         <span id="splunkCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Sentinel Exports</h4>
+         <span id="sentinelCount">0</span>
+      </div>
+      <div class="stats-box">
+         <h4>Model Accuracy</h4>
+         <span id="modelAccuracy">0</span>%
+      </div>
+    </div>
+    <hr>
+    <h3>Runtime Logs</h3>
+    <div id="logsContainer"></div>
+    <p><a href="{{ url_for('index') }}">Home</a></p>
+    <script>
+    function fetchStats() {
+      fetch('{{ url_for("get_stats") }}')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('malwareCount').innerText = data.malware_count;
+          document.getElementById('ingestCount').innerText = data.ingest_count;
+          document.getElementById('elasticCount').innerText = data.elastic_exports;
+          document.getElementById('cortexCount').innerText = data.cortex_exports;
+          document.getElementById('splunkCount').innerText = data.splunk_exports;
+          document.getElementById('sentinelCount').innerText = data.sentinel_exports;
+          document.getElementById('modelAccuracy').innerText = data.model_accuracy.toFixed(2);
+        });
+    }
+
+    function fetchLogs() {
+      fetch('{{ url_for("get_runtime_logs") }}')
+        .then(r => r.json())
+        .then(data => {
+          let logsDiv = document.getElementById('logsContainer');
+          logsDiv.innerHTML = "";
+          data.forEach(line => {
+            let p = document.createElement('p');
+            p.textContent = line;
+            logsDiv.appendChild(p);
+          });
+          // Scroll to bottom
+          logsDiv.scrollTop = logsDiv.scrollHeight;
+        });
+    }
+
+    setInterval(() => {
+      fetchStats();
+      fetchLogs();
+    }, 3000);
+    </script>
+</body>
+</html>
