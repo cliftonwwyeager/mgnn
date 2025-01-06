@@ -27,6 +27,11 @@
         <input type="file" id="file-input" multiple style="display: none;">
         <div id="upload-result" class="upload-result"></div>
         <div id="result-container" class="result-container"></div>
+        <label for="path-input">Directory or Samba Path:</label>
+        <input type="text" id="path-input" placeholder="E.g., /data or smb://server/share">
+        <label for="recursive-check">Recursive Scan</label>
+        <input type="checkbox" id="recursive-check">
+        <button id="scan-button">Scan Directory/Path</button>
     </div>
 
     <script src="script.js"></script>
