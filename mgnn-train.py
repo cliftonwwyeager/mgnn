@@ -25,6 +25,7 @@ import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 logging.basicConfig(level=logging.INFO)
+
 influxdb_url = os.getenv('INFLUXDB_URL')
 token = os.getenv('INFLUXDB_TOKEN')
 org = os.getenv('INFLUXDB_ORG')
@@ -53,7 +54,6 @@ class MGNN(nn.Module):
         super(MGNN, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, output_dim)
-
     def forward(self, x):
         x = nn.functional.relu(self.fc1(x))
         return self.fc2(x)
@@ -62,7 +62,6 @@ class MGNNWithTD(MGNN):
     def __init__(self, input_dim, hidden_dim, output_dim, gamma=0.99):
         super(MGNNWithTD, self).__init__(input_dim, hidden_dim, output_dim)
         self.gamma = gamma
-
     def forward(self, x, target=None, reward=None):
         x = nn.functional.relu(self.fc1(x))
         output = self.fc2(x)
@@ -70,7 +69,6 @@ class MGNNWithTD(MGNN):
             td_error = reward + self.gamma * target - output
             output = output + td_error
         return output
-
     def train_with_td(self, optimizer, criterion, scheduler, train_loader, epochs=20):
         self.train()
         for epoch in range(epochs):
@@ -148,6 +146,7 @@ X_combined = np.concatenate((X, X_synthetic))
 y_combined = np.concatenate((y, y_synthetic))
 
 X_train, X_val, y_train, y_val = train_test_split(X_combined, y_combined, test_size=val_split, random_state=42, stratify=y_combined)
+
 train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
 val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.long))
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
