@@ -12,7 +12,7 @@ tensorflow-cpu==2.12.1
 jinja2==3.1.5
 protobuf==5.29.2
 tensorflow-text==2.18.1
-matplotlib==3.7.1
+matplotlib==3.10.0
 tqdm==4.66.3
 scipy==1.15.0
 setuptools==75.6.0
