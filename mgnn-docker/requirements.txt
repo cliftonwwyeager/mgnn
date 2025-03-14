@@ -10,9 +10,12 @@ deap==1.3.3
 requests==2.32.3
 jinja2==3.1.5
 protobuf
+tensorflow==2.18.1
 tensorflow-text==2.18.1
 matplotlib==3.10.0
 tqdm==4.66.3
 scipy==1.15.0
 setuptools==75.6.0
 typing-extensions
+influxdb-client==1.33.1
+watchdog==2.2.1
