@@ -1,4 +1,4 @@
-# MGNN Docker Deployment
+## MGNN Docker Deployment
 
 This repository contains the Docker setup for deploying the MGNN Flask application with Redis and Nginx as a reverse proxy. Follow the instructions below to build and run your containers.
 
