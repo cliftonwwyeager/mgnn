@@ -17,5 +17,4 @@ tqdm==4.66.3
 scipy==1.15.0
 setuptools==75.6.0
 typing-extensions
-influxdb-client==1.33.1
 watchdog==2.2.1
