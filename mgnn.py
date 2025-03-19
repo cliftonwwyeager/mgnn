@@ -15,7 +15,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam, SGD
 from torch.utils.data import DataLoader, Dataset
-
 try:
     import tensorflow as tf
     from tensorflow.keras import mixed_precision
@@ -26,7 +25,6 @@ try:
     from tensorflow.keras.applications import EfficientNetB0, MobileNetV3Small
 except ImportError:
     tf = None
-
 from sklearn.model_selection import train_test_split
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -93,6 +91,17 @@ def download_and_extract_csv(url, extract_to):
     except Exception as e:
         logging.error(f"Error downloading or extracting CSV: {str(e)}")
 
+def download_csv(url, save_path):
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+        else:
+            logging.error(f"Error downloading file from {url} - status code: {response.status_code}")
+    except Exception as e:
+        logging.error(f"Error downloading file from {url}: {str(e)}")
+
 def load_malicious_hashes_from_csv(csv_path):
     hashes = []
     if not csv_path or not os.path.exists(csv_path):
@@ -107,21 +116,47 @@ def load_malicious_hashes_from_csv(csv_path):
         logging.error(f"Error reading CSV: {str(e)}")
     return hashes
 
-def convert_files_to_hashes(directory):
-    file_hashes = []
-    if not directory or not os.path.exists(directory):
-        return file_hashes
-    for root, _, files in os.walk(directory):
+def load_signatures_from_txt(txt_path):
+    signatures = []
+    if not txt_path or not os.path.exists(txt_path):
+        return signatures
+    try:
+        with open(txt_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line:
+                    signatures.append(line)
+    except Exception as e:
+        logging.error(f"Error reading TXT file: {str(e)}")
+    return signatures
+
+def create_training_dataset_from_uploads(uploads_dir, signatures, image_dim=256):
+    X = []
+    y = []
+    if not os.path.exists(uploads_dir):
+        return None, None
+    for root, _, files in os.walk(uploads_dir):
         for fname in files:
             file_path = os.path.join(root, fname)
             try:
+                image = binary_to_image(file_path, image_dim)
+                X.append(image)
                 with open(file_path, 'rb') as f:
                     content = f.read()
                 file_hash = hashlib.sha256(content).hexdigest()
-                file_hashes.append(file_hash)
+                if file_hash in signatures:
+                    y.append(1)
+                else:
+                    y.append(0)
             except Exception as e:
-                logging.error(f"Error hashing file {file_path}: {e}")
-    return file_hashes
+                logging.error(f"Error processing file {file_path}: {e}")
+    if X:
+        X = np.array(X).reshape(-1, image_dim, image_dim, 1)
+        if tf is not None:
+            y = tf.keras.utils.to_categorical(y, num_classes=2)
+        return X, y
+    else:
+        return None, None
 
 def binary_to_image(file_path, image_dim=256):
     with open(file_path, 'rb') as f:
@@ -152,13 +187,18 @@ def GatedCNNBlock(filters, kernel_size, stride=(1,1), dropout_rate=0.3):
         return gated_output
     return block
 
-def build_model(input_shape=(256,256,3), num_filters=32, kernel_size=(3,3), dropout_rate=0.3, num_classes=2):
+def build_model(input_shape=(256,256,3), num_filters=32, kernel_size=(3,3), dropout_rate=0.4, num_classes=2):
     inputs = Input(shape=input_shape)
-    x = GatedCNNBlock(num_filters, kernel_size)(inputs)
+    if input_shape[-1] == 1:
+        x = Conv2D(3, (3,3), padding='same')(inputs)
+    else:
+        x = inputs
+    x = GatedCNNBlock(num_filters, kernel_size, dropout_rate=dropout_rate)(x)
+    x = GatedCNNBlock(num_filters*2, kernel_size, dropout_rate=dropout_rate)(x)
     x = GlobalMaxPooling2D()(x)
-    x = Dense(128, activation='relu')(x)
+    x = Dense(256, activation='relu')(x)
     x = Dropout(dropout_rate)(x)
-    x = Dense(64, activation='relu')(x)
+    x = Dense(128, activation='relu')(x)
     x = Dropout(dropout_rate)(x)
     outputs = Dense(num_classes, activation='softmax')(x)
     model = Model(inputs=inputs, outputs=outputs)
@@ -286,8 +326,8 @@ def retrieve_confirmations_from_redis():
             continue
     return confirmation_data
 
-def reinforcement_learning_update(data_dir, confirmation_data):
-    model_path = os.path.join(data_dir, 'best_model.h5')
+def reinforcement_learning_update(model_dir, confirmation_data):
+    model_path = os.path.join(model_dir, 'best_model.h5')
     if tf is None or not os.path.exists(model_path):
         return
     model = load_model(model_path)
@@ -297,7 +337,7 @@ def reinforcement_learning_update(data_dir, confirmation_data):
     for data in confirmation_data:
         hash_value = data.get('hash')
         true_class = data.get('true_class', data.get('predicted_class', 0))
-        bin_file_path = os.path.join(data_dir, 'uploads', f"{hash_value}.bin")
+        bin_file_path = os.path.join(model_dir, 'uploads', f"{hash_value}.bin")
         if not os.path.exists(bin_file_path):
             continue
         image = binary_to_image(bin_file_path, image_dim=256)
@@ -315,11 +355,11 @@ def reinforcement_learning_update(data_dir, confirmation_data):
             loss = tf.reduce_mean(loss)
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-    model.save(os.path.join(data_dir, 'best_model_updated.h5'))
+    model.save(os.path.join(model_dir, 'best_model_updated.h5'))
     logging.info(f"Reinforcement learning update applied on {len(images)} samples.")
 
-def analyze_file(file_path, data_dir):
-    model_path = os.path.join(data_dir, 'best_model.h5')
+def analyze_file(file_path, model_dir):
+    model_path = os.path.join(model_dir, 'best_model.h5')
     if tf is None or not os.path.exists(model_path):
         return None
     model = load_model(model_path)
@@ -331,11 +371,58 @@ def analyze_file(file_path, data_dir):
     confidence = float(predictions[0][predicted_class])
     return {'file_path': file_path, 'predicted_class': predicted_class, 'confidence': confidence}
 
-def reward_function(tp, fp, fn):
-    alpha = 1.0
-    beta = 0.5
-    gamma = 0.5
-    return alpha * tp - beta * fp - gamma * fn
+def export_detections_to_influxdb(detections):
+    if not detections:
+        return
+    influxdb_url = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+    db_name = os.getenv("INFLUXDB_DB", "malware")
+    api_key = os.getenv("INFLUXDB_API_KEY", "")
+    user = os.getenv("INFLUXDB_USER", "")
+    password = os.getenv("INFLUXDB_PASSWORD", "")
+    write_url = f"{influxdb_url}/write?db={db_name}"
+    lines = []
+    timestamp = int(time.time() * 1e9)
+    for d in detections:
+        file_path = d.get("file_path", "unknown")
+        file_path_tag = file_path.replace(" ", "_").replace(",", "_")
+        predicted_class = d.get("predicted_class", 0)
+        confidence = d.get("confidence", 0.0)
+        line = f"malware_detections,file_path={file_path_tag} predicted_class={predicted_class},confidence={confidence} {timestamp}"
+        lines.append(line)
+    data = "\n".join(lines)
+    try:
+        headers = {}
+        auth = None
+        if api_key:
+            headers["Authorization"] = f"Token {api_key}"
+        elif user and password:
+            auth = (user, password)
+        response = requests.post(write_url, data=data, headers=headers, auth=auth, timeout=5)
+        if response.status_code != 204:
+            logging.error(f"InfluxDB export error: HTTP {response.status_code} - {response.text}")
+    except Exception as e:
+        logging.error(f"InfluxDB export exception: {str(e)}")
+
+class FileCreatedHandler(FileSystemEventHandler):
+    def __init__(self, model_dir):
+        super().__init__()
+        self.model_dir = model_dir
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        result = analyze_file(event.src_path, self.model_dir)
+        if result is not None:
+            if result['predicted_class'] == 1:
+                try:
+                    file_hash = hashlib.sha256(open(event.src_path, 'rb').read()).hexdigest()
+                except Exception as e:
+                    file_hash = None
+                if file_hash:
+                    redis_client.sadd('detected_malware', file_hash)
+                export_detections_to_siem([result])
+                confirmations = retrieve_confirmations_from_redis()
+                if confirmations:
+                    reinforcement_learning_update(self.model_dir, confirmations)
 
 def export_detections_to_siem(detections):
     if not detections:
@@ -373,33 +460,42 @@ def export_detections_to_siem(detections):
         requests.post(sentinel_url, headers=headers, json=data_payload, timeout=5)
     except Exception as e:
         logging.error(f"Sentinel export error: {str(e)}")
-
-class FileCreatedHandler(FileSystemEventHandler):
-    def __init__(self, data_dir):
-        super().__init__()
-        self.data_dir = data_dir
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        result = analyze_file(event.src_path, self.data_dir)
-        if result is not None:
-            if result['predicted_class'] == 1:
-                try:
-                    file_hash = hashlib.sha256(open(event.src_path, 'rb').read()).hexdigest()
-                except Exception as e:
-                    file_hash = None
-                if file_hash:
-                    redis_client.sadd('detected_malware', file_hash)
-                export_detections_to_siem([result])
-                confirmations = retrieve_confirmations_from_redis()
-                if confirmations:
-                    reinforcement_learning_update(self.data_dir, confirmations)
+    export_detections_to_influxdb(detections)
 
 def main(data_dir, directories_to_monitor):
-    csv_path = os.path.join(data_dir, 'full.csv')
-    download_and_extract_csv('https://bazaar.abuse.ch/export/csv/full/', csv_path)
-    malicious_hashes = load_malicious_hashes_from_csv(csv_path)
-    local_hashes = convert_files_to_hashes(os.path.join(data_dir, 'uploads'))
+    output_dir = os.path.join("mgnn", "mgnn-docker")
+    os.makedirs(output_dir, exist_ok=True)
+    abuse_csv = os.path.join(data_dir, 'abuse.csv')
+    download_and_extract_csv('https://bazaar.abuse.ch/export/csv/full/', abuse_csv)
+    malshare_txt = os.path.join(data_dir, 'malshare.txt')
+    download_csv('https://malshare.com/daily/malshare.txt', malshare_txt)
+    openmalware_txt = os.path.join(data_dir, 'openmalware.txt')
+    download_csv('https://openmalware.com/daily/openmalware.txt', openmalware_txt)
+    abuse_hashes = load_malicious_hashes_from_csv(abuse_csv)
+    malshare_hashes = load_signatures_from_txt(malshare_txt)
+    openmalware_hashes = load_signatures_from_txt(openmalware_txt)
+    all_signatures = list(set(abuse_hashes + malshare_hashes + openmalware_hashes))
+    logging.info(f"Total combined signatures: {len(all_signatures)}")
+    uploads_dir = os.path.join(data_dir, 'uploads')
+    real_X, real_y = create_training_dataset_from_uploads(uploads_dir, all_signatures, image_dim=256)
+    synthetic_count = 100
+    synthetic_X = np.random.rand(synthetic_count, 256, 256, 1).astype(np.float32)
+    synthetic_y = np.random.randint(0, 2, size=(synthetic_count,))
+    if tf is not None:
+        synthetic_y = tf.keras.utils.to_categorical(synthetic_y, num_classes=2)
+    if real_X is not None and real_y is not None and len(real_X) > 0:
+        X_data = np.concatenate([real_X, synthetic_X], axis=0)
+        y_data = np.concatenate([real_y, synthetic_y], axis=0)
+        logging.info(f"Combined training data: {X_data.shape[0]} samples (Real: {real_X.shape[0]}, Synthetic: {synthetic_count})")
+    else:
+        X_data, y_data = synthetic_X, synthetic_y
+        logging.info("No real training data found, using synthetic data only.")
+    indices = np.arange(X_data.shape[0])
+    np.random.shuffle(indices)
+    X_data = X_data[indices]
+    y_data = y_data[indices]
+    x_train, x_temp, y_train, y_temp = train_test_split(X_data, y_data, test_size=0.4, random_state=42)
+    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
     search_space = {
         'num_filters': [16, 32, 64],
         'kernel_size': [(3,3), (5,5)],
@@ -407,11 +503,6 @@ def main(data_dir, directories_to_monitor):
         'batch_size': [16, 32],
         'epochs': [5, 10]
     }
-    X_data = np.random.rand(100, 256, 256, 1).astype(np.float32)
-    y_data = np.random.randint(0, 2, size=(100,))
-    y_data = tf.keras.utils.to_categorical(y_data, num_classes=2) if tf is not None else y_data
-    x_train, x_temp, y_train, y_temp = train_test_split(X_data, y_data, test_size=0.4, random_state=42)
-    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
     best_config = evolutionary_optimization_with_feedback(build_model, x_train, y_train, x_val, y_val,
                                                           search_space, max_generations=5)
     logging.info(f"Best hyperparameters from evolutionary search: {best_config}")
@@ -426,15 +517,15 @@ def main(data_dir, directories_to_monitor):
                     epochs=best_config['epochs'], batch_size=best_config['batch_size'])
     loss, accuracy = final_model.evaluate(x_test, y_test)
     logging.info(f"Final model evaluation - Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
-    final_model.save(os.path.join(data_dir, 'best_model.h5'))
+    final_model.save(os.path.join(output_dir, 'best_model.h5'))
     confirmations = retrieve_confirmations_from_redis()
     if confirmations:
-        reinforcement_learning_update(data_dir, confirmations)
+        reinforcement_learning_update(output_dir, confirmations)
     observers = []
     for folder in directories_to_monitor:
         if not os.path.exists(folder):
             os.makedirs(folder, exist_ok=True)
-        event_handler = FileCreatedHandler(data_dir)
+        event_handler = FileCreatedHandler(output_dir)
         observer = Observer()
         observer.schedule(event_handler, folder, recursive=True)
         observer.start()
