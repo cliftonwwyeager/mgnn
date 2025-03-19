@@ -13,6 +13,10 @@ from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
 import requests
 import subprocess
+import csv
+import time
+from datetime import datetime
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 app = Flask(__name__)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -47,7 +51,6 @@ def increment_redis_counter(key, amount=1):
     redis_client.incrby(key, amount)
 
 def append_runtime_log(message):
-    from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = json.dumps({"time": timestamp, "message": message})
     redis_client.rpush(REDIS_KEY_RUNTIME_LOGS, log_entry)
@@ -334,28 +337,70 @@ def export_to_siem(siem_name, endpoint_url, data_payload, counter_key):
     except Exception as e:
         append_runtime_log(f"{siem_name} export exception: {str(e)}")
 
+def export_detections_to_influxdb(detections):
+    if not detections:
+        return
+    influxdb_url = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+    db_name = os.getenv("INFLUXDB_DB", "malware")
+    api_key = os.getenv("INFLUXDB_API_KEY", "")
+    user = os.getenv("INFLUXDB_USER", "")
+    password = os.getenv("INFLUXDB_PASSWORD", "")
+    write_url = f"{influxdb_url}/write?db={db_name}"
+    lines = []
+    timestamp = int(time.time() * 1e9)
+    for d in detections:
+        file_path = d.get("file_path", "unknown")
+        file_path_tag = file_path.replace(" ", "_").replace(",", "_")
+        predicted_class = d.get("predicted_class", 0)
+        confidence = d.get("confidence", 0.0)
+        line = f"malware_detections,file_path={file_path_tag} predicted_class={predicted_class},confidence={confidence} {timestamp}"
+        lines.append(line)
+    data = "\n".join(lines)
+    try:
+        headers = {}
+        auth = None
+        if api_key:
+            headers["Authorization"] = f"Token {api_key}"
+        elif user and password:
+            auth = (user, password)
+        response = requests.post(write_url, data=data, headers=headers, auth=auth, timeout=5)
+        if response.status_code != 204:
+            app.logger.error(f"InfluxDB export error: HTTP {response.status_code} - {response.text}")
+    except Exception as e:
+        app.logger.error(f"InfluxDB export exception: {str(e)}")
+
 @app.route('/export/elastic', methods=['POST'])
 def export_elastic():
-    payload = {"event": "training_complete", "timestamp": __import__('datetime').datetime.now().isoformat()}
+    payload = {"event": "training_complete", "timestamp": datetime.now().isoformat()}
     export_to_siem("Elastic", os.getenv("ELASTIC_ENDPOINT", "http://localhost:9200/mgnn_index/_doc"), payload, REDIS_KEY_ELASTIC_EXPORTS)
     return jsonify({"status": "OK"})
 
 @app.route('/export/cortex', methods=['POST'])
 def export_cortex():
-    payload = {"event": "training_complete", "timestamp": __import__('datetime').datetime.now().isoformat()}
+    payload = {"event": "training_complete", "timestamp": datetime.now().isoformat()}
     export_to_siem("Cortex XSIAM", os.getenv("CORTEX_ENDPOINT", "http://cortex.example/api/xsiam"), payload, REDIS_KEY_CORTEX_EXPORTS)
     return jsonify({"status": "OK"})
 
 @app.route('/export/splunk', methods=['POST'])
 def export_splunk():
-    payload = {"event": "training_complete", "timestamp": __import__('datetime').datetime.now().isoformat()}
+    payload = {"event": "training_complete", "timestamp": datetime.now().isoformat()}
     export_to_siem("Splunk", os.getenv("SPLUNK_ENDPOINT", "http://splunk.example:8088/services/collector"), payload, REDIS_KEY_SPLUNK_EXPORTS)
     return jsonify({"status": "OK"})
 
 @app.route('/export/sentinel', methods=['POST'])
 def export_sentinel():
-    payload = {"event": "training_complete", "timestamp": __import__('datetime').datetime.now().isoformat()}
+    payload = {"event": "training_complete", "timestamp": datetime.now().isoformat()}
     export_to_siem("Sentinel", os.getenv("SENTINEL_ENDPOINT", "http://sentinel.example/api/logs"), payload, REDIS_KEY_SENTINEL_EXPORTS)
+    return jsonify({"status": "OK"})
+
+@app.route('/export/influx', methods=['POST'])
+def export_influx():
+    if request.is_json:
+        detection_payload = request.get_json(force=True)
+    else:
+        detection_payload = {"file_path": "training_event", "predicted_class": 0, "confidence": 1.0}
+    export_detections_to_influxdb([detection_payload])
+    append_runtime_log("InfluxDB export executed.")
     return jsonify({"status": "OK"})
 
 @app.errorhandler(Exception)
