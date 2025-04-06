@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>System Statistics</title>
+  </head>
+  <body>
+    <h1>System Statistics</h1>
+    <button id="refresh-btn">Refresh Stats</button>
+    <pre id="stats-output"></pre>
+
+    <script>
+      function fetchStats() {
+        fetch('/get_stats')
+          .then(response => response.json())
+          .then(data => {
+            document.getElementById('stats-output').textContent = JSON.stringify(data, null, 2);
+          })
+          .catch(err => {
+            document.getElementById('stats-output').textContent = `Error fetching stats: ${err}`;
+          });
+      }
+
+      document.getElementById('refresh-btn').addEventListener('click', fetchStats);
+
+      window.onload = fetchStats;
+    </script>
+  </body>
+</html>

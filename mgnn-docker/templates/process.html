@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Model Training</title>
+  </head>
+  <body>
+    <h1>Trigger Model Training</h1>
+    <p>Click "Start Training" to run the training script on the server.</p>
+    <button id="start-training-btn">Start Training</button>
+    <pre id="training-status"></pre>
+
+    <script>
+      const startBtn = document.getElementById('start-training-btn');
+      const statusEl = document.getElementById('training-status');
+
+      startBtn.addEventListener('click', () => {
+        fetch('/process', { method: 'POST' })
+          .then(response => response.json())
+          .then(data => {
+            statusEl.textContent = JSON.stringify(data, null, 2);
+          })
+          .catch(err => {
+            statusEl.textContent = `Error: ${err}`;
+          });
+      });
+    </script>
+  </body>
+</html>

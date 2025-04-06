@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Results</title>
+    <style>
+      table, th, td {
+        border: 1px solid #ccc;
+        border-collapse: collapse;
+        padding: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Scan / Confirmation Results</h1>
+    <button id="refresh-results-btn">Refresh Results</button>
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th>Hash</th>
+          <th>Predicted Class</th>
+          <th>Confidence</th>
+          <th>Is Correct?</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <script>
+      const tableBody = document.querySelector('#results-table tbody');
+
+      function fetchResults() {
+        fetch('/get_results')
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`HTTP error ${response.status}`);
+            }
+            return response.json();
+          })
+          .then(data => {
+            tableBody.innerHTML = '';
+            data.forEach(row => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td>${row.hash}</td>
+                <td>${row.predicted_class}</td>
+                <td>${row.confidence}</td>
+                <td>${row.is_correct}</td>
+                <td>${row.timestamp}</td>
+              `;
+              tableBody.appendChild(tr);
+            });
+          })
+          .catch(err => {
+            tableBody.innerHTML = `<tr><td colspan="5">Error: ${err}</td></tr>`;
+          });
+      }
+
+      document.getElementById('refresh-results-btn').addEventListener('click', fetchResults);
+      window.onload = fetchResults;
+    </script>
+  </body>
+</html>

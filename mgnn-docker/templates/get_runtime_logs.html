@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Runtime Logs</title>
+  </head>
+  <body>
+    <h1>Runtime Logs</h1>
+    <button id="refresh-logs-btn">Refresh Logs</button>
+    <pre id="logs-output"></pre>
+
+    <script>
+      function fetchLogs() {
+        fetch('/get_runtime_logs')
+          .then(response => response.json())
+          .then(data => {
+            let formatted = '';
+            data.forEach(entry => {
+              formatted += `[${entry.time}] ${entry.message}\n`;
+            });
+            document.getElementById('logs-output').textContent = formatted;
+          })
+          .catch(err => {
+            document.getElementById('logs-output').textContent = `Error fetching logs: ${err}`;
+          });
+      }
+
+      document.getElementById('refresh-logs-btn').addEventListener('click', fetchLogs);
+
+      window.onload = fetchLogs;
+    </script>
+  </body>
+</html>
