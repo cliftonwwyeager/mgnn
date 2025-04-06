@@ -10,73 +10,18 @@ import requests
 import numpy as np
 import redis
 import time
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam, SGD
-from torch.utils.data import DataLoader, Dataset
-try:
-    import tensorflow as tf
-    from tensorflow.keras import mixed_precision
-    from tensorflow.keras.layers import Input, Dense, Dropout, BatchNormalization, GlobalMaxPooling2D, Multiply, Conv2D
-    from tensorflow.keras.models import Model, load_model
-    from tensorflow.keras.optimizers import Adam as KerasAdam, SGD as KerasSGD
-    from tensorflow.keras.preprocessing.image import ImageDataGenerator
-    from tensorflow.keras.applications import EfficientNetB0, MobileNetV3Small
-except ImportError:
-    tf = None
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Dropout, BatchNormalization, Conv2D, Multiply, Activation, Reshape, GlobalMaxPooling1D, MultiHeadAttention, Add
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.optimizers import Adam as KerasAdam, SGD as KerasSGD
 from sklearn.model_selection import train_test_split
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-
 logging.basicConfig(level=logging.INFO)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD', None)
 redis_client = redis.StrictRedis(host=redis_host, port=redis_port, password=redis_password, db=0)
-
-class MGNN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(MGNN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
-        nn.init.zeros_(self.fc1.bias)
-        nn.init.kaiming_uniform_(self.fc2.weight, nonlinearity='relu')
-        nn.init.zeros_(self.fc2.bias)
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-class MGNNWithTD(MGNN):
-    def __init__(self, input_dim, hidden_dim, output_dim, gamma=0.99):
-        super(MGNNWithTD, self).__init__(input_dim, hidden_dim, output_dim)
-        self.gamma = gamma
-    def forward(self, x, target=None, reward=None):
-        x = F.relu(self.fc1(x))
-        output = self.fc2(x)
-        if target is not None and reward is not None:
-            td_error = reward + self.gamma * target - output
-            output = output + td_error
-        return output
-    def train_with_td(self, optimizer, criterion, scheduler, train_loader, epochs=20):
-        self.train()
-        for epoch in range(epochs):
-            if scheduler:
-                scheduler.step()
-            running_loss = 0.0
-            for inputs, labels in train_loader:
-                optimizer.zero_grad()
-                outputs = self.forward(inputs)
-                target = torch.max(outputs, dim=1)[0].detach()
-                reward = (outputs.argmax(dim=1) == labels).float()
-                td_outputs = self.forward(inputs, target=target, reward=reward)
-                loss = criterion(td_outputs, labels)
-                loss.backward()
-                optimizer.step()
-                running_loss += loss.item()
-            logging.info(f"Epoch {epoch+1}/{epochs} - TD Train Loss: {running_loss/len(train_loader):.4f}")
-        logging.info("Finished Training MGNN with TD")
 
 def download_and_extract_csv(url, extract_to):
     try:
@@ -86,10 +31,10 @@ def download_and_extract_csv(url, extract_to):
                 z.extractall(path=os.path.dirname(extract_to))
                 for filename in z.namelist():
                     if filename.endswith('.csv'):
-                        os.rename(os.path.join(os.path.dirname(extract_to), filename), extract_to)
+                        os.replace(os.path.join(os.path.dirname(extract_to), filename), extract_to)
                         break
     except Exception as e:
-        logging.error(f"Error downloading or extracting CSV: {str(e)}")
+        logging.error(f"Error downloading or extracting CSV from {url}: {e}")
 
 def download_csv(url, save_path):
     try:
@@ -98,9 +43,9 @@ def download_csv(url, save_path):
             with open(save_path, 'wb') as f:
                 f.write(response.content)
         else:
-            logging.error(f"Error downloading file from {url} - status code: {response.status_code}")
+            logging.error(f"Failed to download {url} - HTTP {response.status_code}")
     except Exception as e:
-        logging.error(f"Error downloading file from {url}: {str(e)}")
+        logging.error(f"Error downloading file from {url}: {e}")
 
 def load_malicious_hashes_from_csv(csv_path):
     hashes = []
@@ -113,7 +58,7 @@ def load_malicious_hashes_from_csv(csv_path):
                 if len(row) > 1:
                     hashes.append(row[1])
     except Exception as e:
-        logging.error(f"Error reading CSV: {str(e)}")
+        logging.error(f"Error reading CSV {csv_path}: {e}")
     return hashes
 
 def load_signatures_from_txt(txt_path):
@@ -127,36 +72,8 @@ def load_signatures_from_txt(txt_path):
                 if line:
                     signatures.append(line)
     except Exception as e:
-        logging.error(f"Error reading TXT file: {str(e)}")
+        logging.error(f"Error reading signatures from {txt_path}: {e}")
     return signatures
-
-def create_training_dataset_from_uploads(uploads_dir, signatures, image_dim=256):
-    X = []
-    y = []
-    if not os.path.exists(uploads_dir):
-        return None, None
-    for root, _, files in os.walk(uploads_dir):
-        for fname in files:
-            file_path = os.path.join(root, fname)
-            try:
-                image = binary_to_image(file_path, image_dim)
-                X.append(image)
-                with open(file_path, 'rb') as f:
-                    content = f.read()
-                file_hash = hashlib.sha256(content).hexdigest()
-                if file_hash in signatures:
-                    y.append(1)
-                else:
-                    y.append(0)
-            except Exception as e:
-                logging.error(f"Error processing file {file_path}: {e}")
-    if X:
-        X = np.array(X).reshape(-1, image_dim, image_dim, 1)
-        if tf is not None:
-            y = tf.keras.utils.to_categorical(y, num_classes=2)
-        return X, y
-    else:
-        return None, None
 
 def binary_to_image(file_path, image_dim=256):
     with open(file_path, 'rb') as f:
@@ -170,32 +87,57 @@ def binary_to_image(file_path, image_dim=256):
     image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
     return image / 255.0
 
-def GatedCNNBlock(filters, kernel_size, stride=(1,1), dropout_rate=0.3):
+def create_training_dataset_from_uploads(uploads_dir, signatures, image_dim=256):
+    X, y = [], []
+    if not os.path.exists(uploads_dir):
+        return None, None
+    for root, _, files in os.walk(uploads_dir):
+        for fname in files:
+            file_path = os.path.join(root, fname)
+            try:
+                img = binary_to_image(file_path, image_dim)
+                X.append(img)
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                file_hash = hashlib.sha256(content).hexdigest()
+                label = 1 if file_hash in signatures else 0
+                y.append(label)
+            except Exception as e:
+                logging.error(f"Error processing file {file_path}: {e}")
+    if X:
+        X = np.array(X).reshape(-1, image_dim, image_dim, 1)
+        y = tf.keras.utils.to_categorical(y, num_classes=2) if tf is not None else np.array(y)
+        return X, y
+    else:
+        return None, None
+
+def GatedCNNBlock(filters, kernel_size=(3, 3), stride=(1, 1), dropout_rate=0.3):
     def block(x):
-        if filters <= 32:
-            conv = MobileNetV3Small(input_shape=x.shape[1:], include_top=False, weights='imagenet')(x)
-        else:
-            conv = EfficientNetB0(input_shape=x.shape[1:], include_top=False, weights='imagenet')(x)
+        conv = Conv2D(filters, kernel_size, strides=stride, padding='same')(x)
         conv = BatchNormalization()(conv)
-        conv = tf.keras.activations.relu(conv)
+        conv = Activation('relu')(conv)
         conv = Dropout(dropout_rate)(conv)
-        gate = Conv2D(filters, kernel_size, padding='same', strides=stride)(x)
+        gate = Conv2D(filters, kernel_size, strides=stride, padding='same')(x)
         gate = BatchNormalization()(gate)
-        gate = tf.keras.activations.sigmoid(gate)
+        gate = Activation('sigmoid')(gate)
         gate = Dropout(dropout_rate)(gate)
-        gated_output = Multiply()([conv, gate])
-        return gated_output
+        return Multiply()([conv, gate])
     return block
 
-def build_model(input_shape=(256,256,3), num_filters=32, kernel_size=(3,3), dropout_rate=0.4, num_classes=2):
+def build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(3, 3), dropout_rate=0.4, num_classes=2):
     inputs = Input(shape=input_shape)
+    x = inputs
     if input_shape[-1] == 1:
-        x = Conv2D(3, (3,3), padding='same')(inputs)
-    else:
-        x = inputs
-    x = GatedCNNBlock(num_filters, kernel_size, dropout_rate=dropout_rate)(x)
-    x = GatedCNNBlock(num_filters*2, kernel_size, dropout_rate=dropout_rate)(x)
-    x = GlobalMaxPooling2D()(x)
+        x = Conv2D(3, (3, 3), padding='same')(x)
+    x = GatedCNNBlock(num_filters, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
+    x = GatedCNNBlock(num_filters * 2, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
+    x = GatedCNNBlock(num_filters * 4, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
+    x = Reshape((-1, num_filters * 4))(x)
+    attn = MultiHeadAttention(num_heads=4, key_dim=num_filters * 1, dropout=dropout_rate)
+    attn_output = attn(x, x)
+    x = Add()([x, attn_output])
+    x = Dropout(dropout_rate)(x)
+    x = GlobalMaxPooling1D()(x)
     x = Dense(256, activation='relu')(x)
     x = Dropout(dropout_rate)(x)
     x = Dense(128, activation='relu')(x)
@@ -206,170 +148,17 @@ def build_model(input_shape=(256,256,3), num_filters=32, kernel_size=(3,3), drop
     model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
-def load_and_preprocess_data(directory, img_size=(256,256), batch_size=32, validation_split=0.2):
-    datagen = ImageDataGenerator(
-        rescale=1.0/255.0,
-        rotation_range=20, width_shift_range=0.2, height_shift_range=0.2,
-        shear_range=0.2, zoom_range=0.2,
-        horizontal_flip=True, fill_mode='nearest',
-        validation_split=validation_split
-    )
-    train_generator = datagen.flow_from_directory(
-        directory, target_size=img_size, batch_size=batch_size, class_mode='categorical', subset='training'
-    )
-    val_generator = datagen.flow_from_directory(
-        directory, target_size=img_size, batch_size=batch_size, class_mode='categorical', subset='validation'
-    )
-    return train_generator, val_generator
-
-@tf.function
-def train_step(model, images, labels, optimizer):
-    with tf.GradientTape() as tape:
-        predictions = model(images, training=True)
-        loss = tf.keras.losses.categorical_crossentropy(labels, predictions)
-        loss = tf.reduce_mean(loss)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss
-
-def train_model_tf(data_dir, epochs=10, batch_size=32):
-    if tf is None:
-        raise ImportError("TensorFlow is not available, cannot train TF model.")
-    policy = mixed_precision.Policy('mixed_float16')
-    mixed_precision.set_global_policy(policy)
-    strategy = tf.distribute.MirroredStrategy()
-    with strategy.scope():
-        train_gen, val_gen = load_and_preprocess_data(data_dir, img_size=(256,256), batch_size=batch_size)
-        model = build_model(input_shape=(256,256,3), num_classes=2)
-        optimizer = KerasAdam(learning_rate=1e-4)
-    train_ds = tf.data.Dataset.from_generator(
-        lambda: train_gen,
-        output_signature=(
-            tf.TensorSpec(shape=(None, 256, 256, 3), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 2), dtype=tf.float32)
-        )
-    ).prefetch(tf.data.AUTOTUNE)
-    val_ds = tf.data.Dataset.from_generator(
-        lambda: val_gen,
-        output_signature=(
-            tf.TensorSpec(shape=(None, 256, 256, 3), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 2), dtype=tf.float32)
-        )
-    ).prefetch(tf.data.AUTOTUNE)
-    @tf.function
-    def distributed_train_step(images, labels):
-        per_replica_losses = strategy.run(train_step, args=(model, images, labels, optimizer))
-        return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
-    for epoch in range(epochs):
-        for images, labels in train_ds:
-            loss = distributed_train_step(images, labels)
-        val_loss, val_accuracy = model.evaluate(val_ds, verbose=0)
-        logging.info(f"[TF] Epoch {epoch+1}/{epochs} - ValLoss: {val_loss:.4f}, ValAcc: {val_accuracy:.4f}")
-    model.save(os.path.join(data_dir, 'best_model.h5'))
-    logging.info("TensorFlow model training complete.")
-    return model
-
-def random_configuration(search_space):
-    return {param: random.choice(values) for param, values in search_space.items()}
-
-def evaluate_model(model_builder, x_train, y_train, x_val, y_val, config):
-    model = model_builder(
-        input_shape=(256,256,1),
-        num_filters=config['num_filters'],
-        kernel_size=config['kernel_size'],
-        dropout_rate=config['dropout_rate'],
-        num_classes=2
-    )
-    model.compile(
-        optimizer=KerasSGD(learning_rate=0.01, momentum=0.9, nesterov=True),
-        loss='categorical_crossentropy', metrics=['accuracy']
-    )
-    history = model.fit(x_train, y_train, validation_data=(x_val, y_val),
-                        epochs=config['epochs'], batch_size=config['batch_size'], verbose=0)
-    best_val_acc = max(history.history['val_accuracy'])
-    return best_val_acc
-
-def run_evolutionary_optimization_generation(model_builder, x_train, y_train, x_val, y_val, search_space, population_size=10):
-    population = [random_configuration(search_space) for _ in range(population_size)]
-    performances = []
-    for config in population:
-        performance = evaluate_model(model_builder, x_train, y_train, x_val, y_val, config)
-        performances.append(performance)
-    best_index = int(np.argmax(performances))
-    best_config = population[best_index]
-    best_performance = performances[best_index]
-    return best_config, best_performance
-
-def evolutionary_optimization_with_feedback(model_builder, x_train, y_train, x_val, y_val, initial_search_space, max_generations=10, performance_threshold=1e-4):
-    last_best_performance = 0.0
-    best_config = None
-    for generation in range(max_generations):
-        current_best_config, current_best_perf = run_evolutionary_optimization_generation(
-            model_builder, x_train, y_train, x_val, y_val, initial_search_space
-        )
-        if best_config is None or current_best_perf > last_best_performance:
-            best_config = current_best_config
-        if abs(current_best_perf - last_best_performance) < performance_threshold:
-            logging.info(f"No significant improvement in generation {generation}, stopping search.")
-            break
-        last_best_performance = current_best_perf
-        logging.info(f"Generation {generation}: Best performance = {current_best_perf:.4f}")
-    return best_config
-
-def retrieve_confirmations_from_redis():
-    accurate_predictions = redis_client.smembers('accurate_predictions')
-    confirmation_data = []
-    for record in accurate_predictions:
-        try:
-            confirmation_data.append(json.loads(record))
-        except json.JSONDecodeError:
-            continue
-    return confirmation_data
-
-def reinforcement_learning_update(model_dir, confirmation_data):
-    model_path = os.path.join(model_dir, 'best_model.h5')
-    if tf is None or not os.path.exists(model_path):
-        return
-    model = load_model(model_path)
-    optimizer = KerasAdam(learning_rate=1e-4)
-    images = []
-    labels = []
-    for data in confirmation_data:
-        hash_value = data.get('hash')
-        true_class = data.get('true_class', data.get('predicted_class', 0))
-        bin_file_path = os.path.join(model_dir, 'uploads', f"{hash_value}.bin")
-        if not os.path.exists(bin_file_path):
-            continue
-        image = binary_to_image(bin_file_path, image_dim=256)
-        image = np.expand_dims(image, axis=-1)
-        images.append(image)
-        labels.append(true_class)
-    if not images:
-        return
-    images = np.array(images)
-    labels = tf.keras.utils.to_categorical(labels, num_classes=2)
-    for epoch in range(5):
-        with tf.GradientTape() as tape:
-            predictions = model(images, training=True)
-            loss = tf.keras.losses.categorical_crossentropy(labels, predictions)
-            loss = tf.reduce_mean(loss)
-        grads = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
-    model.save(os.path.join(model_dir, 'best_model_updated.h5'))
-    logging.info(f"Reinforcement learning update applied on {len(images)} samples.")
-
 def analyze_file(file_path, model_dir):
     model_path = os.path.join(model_dir, 'best_model.h5')
-    if tf is None or not os.path.exists(model_path):
+    if not os.path.exists(model_path):
         return None
     model = load_model(model_path)
     image = binary_to_image(file_path, image_dim=256)
-    image = np.expand_dims(image, axis=-1)
-    image = np.expand_dims(image, axis=0)
-    predictions = model.predict(image)
-    predicted_class = int(np.argmax(predictions, axis=1)[0])
-    confidence = float(predictions[0][predicted_class])
-    return {'file_path': file_path, 'predicted_class': predicted_class, 'confidence': confidence}
+    img_array = np.expand_dims(image, axis=(0, -1))
+    predictions = model.predict(img_array)
+    pred_class = int(np.argmax(predictions, axis=1)[0])
+    confidence = float(predictions[0][pred_class])
+    return {'file_path': file_path, 'predicted_class': pred_class, 'confidence': confidence}
 
 def export_detections_to_influxdb(detections):
     if not detections:
@@ -384,10 +173,10 @@ def export_detections_to_influxdb(detections):
     timestamp = int(time.time() * 1e9)
     for d in detections:
         file_path = d.get("file_path", "unknown")
-        file_path_tag = file_path.replace(" ", "_").replace(",", "_")
-        predicted_class = d.get("predicted_class", 0)
-        confidence = d.get("confidence", 0.0)
-        line = f"malware_detections,file_path={file_path_tag} predicted_class={predicted_class},confidence={confidence} {timestamp}"
+        file_tag = file_path.replace(" ", "_").replace(",", "_")
+        pred = d.get("predicted_class", 0)
+        conf = d.get("confidence", 0.0)
+        line = f"malware_detections,file_path={file_tag} predicted_class={pred},confidence={conf} {timestamp}"
         lines.append(line)
     data = "\n".join(lines)
     try:
@@ -401,7 +190,7 @@ def export_detections_to_influxdb(detections):
         if response.status_code != 204:
             logging.error(f"InfluxDB export error: HTTP {response.status_code} - {response.text}")
     except Exception as e:
-        logging.error(f"InfluxDB export exception: {str(e)}")
+        logging.error(f"InfluxDB export exception: {e}")
 
 class FileCreatedHandler(FileSystemEventHandler):
     def __init__(self, model_dir):
@@ -429,20 +218,20 @@ def export_detections_to_siem(detections):
         return
     data_payload = {"detections": detections, "timestamp": time.time()}
     cortex_url = os.getenv("CORTEX_XSIAM_URL", "https://xsiam.example.api/ingest")
-    cortex_token = os.getenv("CORTEX_XSIAM_API_KEY", "example_xsiam_key")
+    cortex_token = os.getenv("CORTEX_XSIAM_API_KEY", "")
     try:
         headers = {"Authorization": f"Bearer {cortex_token}", "Content-Type": "application/json"}
         requests.post(cortex_url, headers=headers, json=data_payload, timeout=5)
     except Exception as e:
-        logging.error(f"Cortex XSIAM export error: {str(e)}")
+        logging.error(f"Cortex XSIAM export error: {e}")
     elastic_url = os.getenv("ELASTIC_URL", "https://elastic.example:9200")
-    elastic_api_key = os.getenv("ELASTIC_API_KEY", "example_elastic_key")
+    elastic_api_key = os.getenv("ELASTIC_API_KEY", "")
     try:
         headers = {"Authorization": f"ApiKey {elastic_api_key}", "Content-Type": "application/json"}
         index_name = os.getenv("ELASTIC_INDEX", "malware-detections")
         requests.post(f"{elastic_url}/{index_name}/_doc", headers=headers, json=data_payload, verify=False, timeout=5)
     except Exception as e:
-        logging.error(f"Elastic export error: {str(e)}")
+        logging.error(f"Elastic export error: {e}")
     splunk_url = os.getenv("SPLUNK_HEC_URL", "https://splunk.example:8088/services/collector")
     splunk_token = os.getenv("SPLUNK_HEC_TOKEN", "example_splunk_token")
     try:
@@ -450,17 +239,58 @@ def export_detections_to_siem(detections):
         event_data = {"event": data_payload, "sourcetype": "malware_detection"}
         requests.post(splunk_url, headers=headers, json=event_data, verify=False, timeout=5)
     except Exception as e:
-        logging.error(f"Splunk export error: {str(e)}")
-    sentinel_workspace_id = os.getenv("SENTINEL_WORKSPACE_ID", "example_workspace_id")
-    sentinel_shared_key = os.getenv("SENTINEL_SHARED_KEY", "example_shared_key")
-    sentinel_log_name = os.getenv("SENTINEL_LOG_TYPE", "MalwareDetections")
+        logging.error(f"Splunk export error: {e}")
+    sentinel_workspace = os.getenv("SENTINEL_WORKSPACE_ID", "example_workspace_id")
+    sentinel_key = os.getenv("SENTINEL_SHARED_KEY", "example_shared_key")
+    sentinel_log_type = os.getenv("SENTINEL_LOG_TYPE", "MalwareDetections")
     try:
-        sentinel_url = f"https://{sentinel_workspace_id}.ods.opinsights.azure.com/api/logs?api-version=2016-04-01"
-        headers = {"Content-Type": "application/json", "Log-Type": sentinel_log_name}
+        sentinel_url = f"https://{sentinel_workspace}.ods.opinsights.azure.com/api/logs?api-version=2016-04-01"
+        headers = {"Content-Type": "application/json", "Log-Type": sentinel_log_type}
         requests.post(sentinel_url, headers=headers, json=data_payload, timeout=5)
     except Exception as e:
-        logging.error(f"Sentinel export error: {str(e)}")
+        logging.error(f"Sentinel export error: {e}")
     export_detections_to_influxdb(detections)
+
+def retrieve_confirmations_from_redis():
+    confirmed = redis_client.smembers('accurate_predictions')
+    confirmation_data = []
+    for record in confirmed:
+        try:
+            confirmation_data.append(json.loads(record))
+        except json.JSONDecodeError:
+            continue
+    return confirmation_data
+
+def reinforcement_learning_update(model_dir, confirmation_data):
+    model_path = os.path.join(model_dir, 'best_model.h5')
+    if not os.path.exists(model_path):
+        return
+    model = load_model(model_path)
+    optimizer = KerasAdam(learning_rate=1e-4)
+    images = []
+    labels = []
+    for data in confirmation_data:
+        hash_value = data.get('hash')
+        true_class = data.get('true_class', data.get('predicted_class', 0))
+        bin_file = os.path.join(model_dir, 'uploads', f"{hash_value}.bin")
+        if not os.path.exists(bin_file):
+            continue
+        img = binary_to_image(bin_file, image_dim=256)
+        img = np.expand_dims(img, axis=(0, -1))
+        images.append(img[0])
+        labels.append(true_class)
+    if not images:
+        return
+    images = np.array(images)
+    labels = tf.keras.utils.to_categorical(labels, num_classes=2)
+    for epoch in range(5):
+        with tf.GradientTape() as tape:
+            preds = model(images, training=True)
+            loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(labels, preds))
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    model.save(os.path.join(model_dir, 'best_model_updated.h5'))
+    logging.info(f"Reinforcement learning update applied to {len(images)} samples.")
 
 def main(data_dir, directories_to_monitor):
     output_dir = os.path.join("mgnn", "mgnn-docker")
@@ -481,50 +311,32 @@ def main(data_dir, directories_to_monitor):
     synthetic_count = 100
     synthetic_X = np.random.rand(synthetic_count, 256, 256, 1).astype(np.float32)
     synthetic_y = np.random.randint(0, 2, size=(synthetic_count,))
-    if tf is not None:
-        synthetic_y = tf.keras.utils.to_categorical(synthetic_y, num_classes=2)
+    synthetic_y = tf.keras.utils.to_categorical(synthetic_y, num_classes=2) if tf is not None else synthetic_y
     if real_X is not None and real_y is not None and len(real_X) > 0:
         X_data = np.concatenate([real_X, synthetic_X], axis=0)
         y_data = np.concatenate([real_y, synthetic_y], axis=0)
         logging.info(f"Combined training data: {X_data.shape[0]} samples (Real: {real_X.shape[0]}, Synthetic: {synthetic_count})")
     else:
         X_data, y_data = synthetic_X, synthetic_y
-        logging.info("No real training data found, using synthetic data only.")
-    indices = np.arange(X_data.shape[0])
-    np.random.shuffle(indices)
-    X_data = X_data[indices]
-    y_data = y_data[indices]
+        logging.info("No real training data found; using synthetic data only.")
+    indices = np.arange(X_data.shape[0]); np.random.shuffle(indices)
+    X_data, y_data = X_data[indices], y_data[indices]
     x_train, x_temp, y_train, y_temp = train_test_split(X_data, y_data, test_size=0.4, random_state=42)
     x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
-    search_space = {
-        'num_filters': [16, 32, 64],
-        'kernel_size': [(3,3), (5,5)],
-        'dropout_rate': [0.3, 0.4, 0.5],
-        'batch_size': [16, 32],
-        'epochs': [5, 10]
-    }
-    best_config = evolutionary_optimization_with_feedback(build_model, x_train, y_train, x_val, y_val,
-                                                          search_space, max_generations=5)
-    logging.info(f"Best hyperparameters from evolutionary search: {best_config}")
-    final_model = build_model(input_shape=(256,256,1),
-                              num_filters=best_config['num_filters'],
-                              kernel_size=best_config['kernel_size'],
-                              dropout_rate=best_config['dropout_rate'],
-                              num_classes=2)
-    final_model.compile(optimizer=KerasSGD(learning_rate=0.01, momentum=0.9, nesterov=True),
-                        loss='categorical_crossentropy', metrics=['accuracy'])
-    final_model.fit(x_train, y_train, validation_data=(x_val, y_val),
-                    epochs=best_config['epochs'], batch_size=best_config['batch_size'])
-    loss, accuracy = final_model.evaluate(x_test, y_test)
+    model = build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(3, 3), dropout_rate=0.4, num_classes=2)
+    model.compile(optimizer=KerasSGD(learning_rate=0.01, momentum=0.9, nesterov=True),
+                  loss='categorical_crossentropy', metrics=['accuracy'])
+    model.fit(x_train, y_train, validation_data=(x_val, y_val),
+              epochs=10, batch_size=32)
+    loss, accuracy = model.evaluate(x_test, y_test, verbose=0)
     logging.info(f"Final model evaluation - Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
-    final_model.save(os.path.join(output_dir, 'best_model.h5'))
+    model.save(os.path.join(output_dir, 'best_model.h5'))
     confirmations = retrieve_confirmations_from_redis()
     if confirmations:
         reinforcement_learning_update(output_dir, confirmations)
     observers = []
     for folder in directories_to_monitor:
-        if not os.path.exists(folder):
-            os.makedirs(folder, exist_ok=True)
+        os.makedirs(folder, exist_ok=True)
         event_handler = FileCreatedHandler(output_dir)
         observer = Observer()
         observer.schedule(event_handler, folder, recursive=True)
@@ -541,6 +353,9 @@ def main(data_dir, directories_to_monitor):
             obs.join()
 
 if __name__ == "__main__":
+    data_dir = "/path/to/upload/folder"
+    directories_to_monitor = [os.path.join(data_dir, 'uploads')]
+    main(data_dir, directories_to_monitor)
     data_dir = "/path/to/upload/folder"
     directories_to_monitor = [os.path.join(data_dir, 'uploads')]
     main(data_dir, directories_to_monitor)
