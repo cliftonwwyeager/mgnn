@@ -1,28 +1,22 @@
-from flask import Flask, request, jsonify, render_template, abort
-import os
-import hashlib
-import redis
-import json
-import pickle
-import torch
-import numpy as np
-import pandas as pd
+from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-from sklearn.feature_extraction.text import TfidfVectorizer
+import os
+import json
+import logging
+import hashlib
+import time
 import requests
 import subprocess
-import csv
-import time
+import numpy as np
+import pickle
+import redis
 from datetime import datetime
-from sklearn.feature_extraction.text import TfidfVectorizer
-
+from mgnn import build_model, binary_to_image
 app = Flask(__name__)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD', None)
-redis_client = redis.StrictRedis(host=redis_host, port=redis_port, password=redis_password, db=0)
+redis_client = redis.StrictRedis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
 output_dir = '/home/user/mgnn'
 os.makedirs(output_dir, exist_ok=True)
 REDIS_KEY_MALWARE_COUNT = "stats:malware_count"
@@ -35,14 +29,10 @@ REDIS_KEY_MODEL_ACCURACY = "stats:model_accuracy"
 REDIS_KEY_RUNTIME_LOGS = "logs:runtime"
 
 def initialize_redis_counters():
-    for key in [REDIS_KEY_MALWARE_COUNT, REDIS_KEY_INGEST_COUNT, 
-                REDIS_KEY_ELASTIC_EXPORTS, REDIS_KEY_CORTEX_EXPORTS, 
-                REDIS_KEY_SPLUNK_EXPORTS, REDIS_KEY_SENTINEL_EXPORTS]:
+    for key in [REDIS_KEY_MALWARE_COUNT, REDIS_KEY_INGEST_COUNT, REDIS_KEY_ELASTIC_EXPORTS, 
+                REDIS_KEY_CORTEX_EXPORTS, REDIS_KEY_SPLUNK_EXPORTS, REDIS_KEY_SENTINEL_EXPORTS, REDIS_KEY_MODEL_ACCURACY]:
         if not redis_client.exists(key):
-            redis_client.set(key, 0)
-    if not redis_client.exists(REDIS_KEY_MODEL_ACCURACY):
-        redis_client.set(REDIS_KEY_MODEL_ACCURACY, "0.0")
-
+            redis_client.set(key, "0.0" if key == REDIS_KEY_MODEL_ACCURACY else 0)
 initialize_redis_counters()
 
 def increment_redis_counter(key, amount=1):
@@ -52,38 +42,9 @@ def increment_redis_counter(key, amount=1):
 
 def append_runtime_log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = json.dumps({"time": timestamp, "message": message})
-    redis_client.rpush(REDIS_KEY_RUNTIME_LOGS, log_entry)
+    entry = json.dumps({"time": timestamp, "message": message})
+    redis_client.rpush(REDIS_KEY_RUNTIME_LOGS, entry)
     redis_client.ltrim(REDIS_KEY_RUNTIME_LOGS, -1000, -1)
-
-global_tfidf = None
-global_pca = None
-global_scaler = None
-try:
-    vocab_json = None
-    with open(os.path.join(output_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
-        vocab_json = f.read().decode('utf-8')
-    if vocab_json:
-        vocab = json.loads(vocab_json)
-        global_tfidf = TfidfVectorizer(max_features=5000, vocabulary=vocab)
-    pca_components = None
-    pca_mean = None
-    with open(os.path.join(output_dir, 'pca_components.npy'), 'rb') as f:
-        pca_components = np.load(f)
-        pca_mean = np.load(f)
-    if pca_components is not None and pca_mean is not None:
-        global_pca = PCA(n_components=pca_components.shape[0])
-        global_pca.components_ = pca_components
-        global_pca.mean_ = pca_mean
-    with open(os.path.join(output_dir, 'scaler.pkl'), 'rb') as f:
-        global_scaler = pickle.load(f)
-    if global_tfidf and global_pca and global_scaler:
-        append_runtime_log("Loaded feature extraction artifacts for inference.")
-except Exception as e:
-    global_tfidf = None
-    global_pca = None
-    global_scaler = None
-    append_runtime_log("Feature artifacts not found, will fit on input as fallback.")
 
 def calculate_hash(file_path):
     with open(file_path, 'rb') as f:
@@ -91,46 +52,27 @@ def calculate_hash(file_path):
     return hashlib.sha256(content).hexdigest()
 
 def process_file(file_path):
-    try:
-        data = pd.read_csv(file_path)
-    except Exception as e:
-        raise ValueError(f"Failed to read CSV: {e}")
-    combined_text = data.astype(str).apply(lambda row: ' '.join(row), axis=1)
-    if global_tfidf and global_pca and global_scaler:
-        tfidf_matrix = global_tfidf.transform(combined_text)
-        X = global_pca.transform(tfidf_matrix.toarray())
-        X = global_scaler.transform(X)
-    else:
-        tfidf = TfidfVectorizer(max_features=5000)
-        tfidf_matrix = tfidf.fit_transform(combined_text)
-        pca = PCA(n_components=100)
-        X = pca.fit_transform(tfidf_matrix.toarray())
-        X = StandardScaler().fit_transform(X)
-        append_runtime_log("Warning: Using fallback feature processing (fitted on input file).")
+    img = binary_to_image(file_path, image_dim=256)
+    X = np.expand_dims(img, axis=(0, -1))
     return X
 
 def load_model():
-    best_hidden_dim = redis_client.get("best_hidden_dim")
-    best_learning_rate = redis_client.get("best_learning_rate")
-    hidden_dim = int(best_hidden_dim) if best_hidden_dim else 64
-    learning_rate = float(best_learning_rate) if best_learning_rate else 1e-3
-    from mgnn import MGNNWithTD
-    model = MGNNWithTD(100, hidden_dim, 10)
-    model_path = os.path.join(output_dir, 'best_model.pth')
+    model_path = os.path.join(output_dir, 'best_model.h5')
+    model = None
     if os.path.exists(model_path):
         try:
-            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            model = tf.keras.models.load_model(model_path)
             append_runtime_log(f"Model loaded from {model_path}.")
         except Exception as e:
-            append_runtime_log(f"Error loading model weights: {e}")
-    else:
-        append_runtime_log("No trained model found; using randomly initialized weights.")
-    model.eval()
-    try:
-        model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-        append_runtime_log("Model quantized for inference.")
-    except Exception as e:
-        append_runtime_log(f"Quantization failed: {e}")
+            append_runtime_log(f"Error loading model: {e}")
+            model = None
+    if model is None:
+        try:
+            model = build_model(input_shape=(256, 256, 1), num_classes=2)
+            append_runtime_log("No trained model found; using a fresh untrained model.")
+        except Exception as e:
+            append_runtime_log(f"Failed to initialize model: {e}")
+            model = None
     return model
 
 @app.route('/')
@@ -168,7 +110,7 @@ def get_runtime_logs():
         try:
             decoded_logs.append(json.loads(entry))
         except Exception:
-            decoded_logs.append(entry.decode('utf-8') if isinstance(entry, bytes) else entry)
+            decoded_logs.append(entry if isinstance(entry, str) else entry.decode('utf-8'))
     return jsonify(decoded_logs)
 
 @app.route('/upload', methods=['GET', 'POST'])
@@ -194,19 +136,20 @@ def upload_file():
         os.remove(file_path)
         return jsonify({'error': str(e)}), 400
     model = load_model()
-    X_tensor = torch.tensor(X, dtype=torch.float32)
-    with torch.no_grad():
-        outputs = model(X_tensor)
-    if X_tensor.ndim == 2 and X_tensor.shape[0] > 1:
-        out = outputs[0].unsqueeze(0)
-    else:
-        out = outputs
-    predicted_class = int(torch.argmax(out, dim=1).item())
-    confidence = float(torch.softmax(out, dim=1).max().item())
+    if model is None:
+        os.remove(file_path)
+        return jsonify({'error': 'Model not available'}), 500
+    predictions = model.predict(X)
+    predicted_class = int(np.argmax(predictions, axis=1)[0])
+    confidence = float(np.max(predictions))
     if predicted_class == 1:
         increment_redis_counter(REDIS_KEY_MALWARE_COUNT)
-    redis_client.set(hash_value, json.dumps({'predicted_class': predicted_class, 'confidence': confidence}))
-    append_runtime_log(f"File '{filename}' processed (SHA256: {hash_value}). Prediction: {predicted_class} (Conf={confidence:.4f})")
+    redis_client.set(hash_value, json.dumps({
+        'predicted_class': predicted_class,
+        'confidence': confidence
+    }))
+    append_runtime_log(f"File '{filename}' processed (SHA256: {hash_value}). "
+                       f"Prediction: {predicted_class} (Conf={confidence:.4f})")
     try:
         os.remove(file_path)
     except Exception:
@@ -217,35 +160,11 @@ def upload_file():
 def process_training():
     subprocess.call(["python", "mgnn-train.py"])
     try:
-        redis_client.set(REDIS_KEY_RUNTIME_LOGS, 0)
         model_acc = redis_client.get(REDIS_KEY_MODEL_ACCURACY)
         append_runtime_log(f"Training completed. New model accuracy: {model_acc}%")
-        global global_tfidf, global_pca, global_scaler
-        global_tfidf = None; global_pca = None; global_scaler = None
-        try:
-            vocab_json = None
-            with open(os.path.join(output_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
-                vocab_json = f.read().decode('utf-8')
-            if vocab_json:
-                vocab = json.loads(vocab_json)
-                global_tfidf = TfidfVectorizer(max_features=5000, vocabulary=vocab)
-            pca_components = None; pca_mean = None
-            with open(os.path.join(output_dir, 'pca_components.npy'), 'rb') as f:
-                pca_components = np.load(f)
-                pca_mean = np.load(f)
-            if pca_components is not None and pca_mean is not None:
-                global_pca = PCA(n_components=pca_components.shape[0])
-                global_pca.components_ = pca_components
-                global_pca.mean_ = pca_mean
-            with open(os.path.join(output_dir, 'scaler.pkl'), 'rb') as f:
-                global_scaler = pickle.load(f)
-            if global_tfidf and global_pca and global_scaler:
-                append_runtime_log("Feature artifacts reloaded after training.")
-        except Exception as e:
-            append_runtime_log(f"Error reloading artifacts: {e}")
     except Exception as e:
         append_runtime_log(f"Training process completed with error: {e}")
-    return jsonify({'status': 'Model training complete'})
+    return jsonify({"status": "Model training complete"})
 
 @app.route('/confirm', methods=['POST'])
 def confirm():
@@ -264,9 +183,12 @@ def confirm():
         record = {'hash': hash_value, 'predicted_class': prediction['predicted_class']}
         redis_client.sadd('accurate_predictions', json.dumps(record))
         if true_class is not None:
-            record_update = {'hash': hash_value, 'predicted_class': prediction['predicted_class'], 'true_class': true_class}
+            record_update = {
+                'hash': hash_value,
+                'predicted_class': prediction['predicted_class'],
+                'true_class': true_class
+            }
             redis_client.sadd('accurate_predictions', json.dumps(record_update))
-    redis_client.set(f"confirmed:{hash_value}", json.dumps(prediction))
     append_runtime_log(f"User confirmation received for {hash_value}: is_correct={is_correct}")
     return jsonify({'status': 'Confirmation recorded'})
 
@@ -303,11 +225,10 @@ def record_confirmation(hash_value, prediction, is_correct):
                 'predicted_class': prediction.get('predicted_class'),
                 'confidence': prediction.get('confidence'),
                 'is_correct': bool(is_correct),
-                'timestamp': pd.Timestamp.now().isoformat()
+                'timestamp': datetime.now().isoformat()
             })
     except Exception as e:
-        logging_msg = f"Error recording confirmation: {e}"
-        append_runtime_log(logging_msg)
+        append_runtime_log(f"Error recording confirmation: {e}")
 
 def export_to_siem(siem_name, endpoint_url, data_payload, counter_key):
     headers = {"Content-Type": "application/json"}
@@ -335,39 +256,7 @@ def export_to_siem(siem_name, endpoint_url, data_payload, counter_key):
         else:
             append_runtime_log(f"{siem_name} export failed (status={resp.status_code}).")
     except Exception as e:
-        append_runtime_log(f"{siem_name} export exception: {str(e)}")
-
-def export_detections_to_influxdb(detections):
-    if not detections:
-        return
-    influxdb_url = os.getenv("INFLUXDB_URL", "http://localhost:8086")
-    db_name = os.getenv("INFLUXDB_DB", "malware")
-    api_key = os.getenv("INFLUXDB_API_KEY", "")
-    user = os.getenv("INFLUXDB_USER", "")
-    password = os.getenv("INFLUXDB_PASSWORD", "")
-    write_url = f"{influxdb_url}/write?db={db_name}"
-    lines = []
-    timestamp = int(time.time() * 1e9)
-    for d in detections:
-        file_path = d.get("file_path", "unknown")
-        file_path_tag = file_path.replace(" ", "_").replace(",", "_")
-        predicted_class = d.get("predicted_class", 0)
-        confidence = d.get("confidence", 0.0)
-        line = f"malware_detections,file_path={file_path_tag} predicted_class={predicted_class},confidence={confidence} {timestamp}"
-        lines.append(line)
-    data = "\n".join(lines)
-    try:
-        headers = {}
-        auth = None
-        if api_key:
-            headers["Authorization"] = f"Token {api_key}"
-        elif user and password:
-            auth = (user, password)
-        response = requests.post(write_url, data=data, headers=headers, auth=auth, timeout=5)
-        if response.status_code != 204:
-            app.logger.error(f"InfluxDB export error: HTTP {response.status_code} - {response.text}")
-    except Exception as e:
-        app.logger.error(f"InfluxDB export exception: {str(e)}")
+        append_runtime_log(f"{siem_name} export exception: {e}")
 
 @app.route('/export/elastic', methods=['POST'])
 def export_elastic():
@@ -397,19 +286,5 @@ def export_sentinel():
 def export_influx():
     if request.is_json:
         detection_payload = request.get_json(force=True)
-    else:
-        detection_payload = {"file_path": "training_event", "predicted_class": 0, "confidence": 1.0}
-    export_detections_to_influxdb([detection_payload])
-    append_runtime_log("InfluxDB export executed.")
+        export_to_siem("Elastic", os.getenv("INFLUXDB_URL", "http://localhost:8086"), detection_payload, REDIS_KEY_ELASTIC_EXPORTS)
     return jsonify({"status": "OK"})
-
-@app.errorhandler(Exception)
-def handle_exception(error):
-    from werkzeug.exceptions import HTTPException
-    if isinstance(error, HTTPException):
-        return error
-    append_runtime_log(f"Unhandled exception: {str(error)}")
-    return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
-
-if __name__ == '__main__':
-    app.run(debug=False)
