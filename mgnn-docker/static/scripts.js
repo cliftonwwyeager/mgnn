@@ -3,9 +3,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const fileInput = document.getElementById('file-input');
     const uploadResult = document.getElementById('upload-result');
     const resultContainer = document.getElementById('result-container');
-    const pathInput = document.getElementById('path-input');
-    const recursiveCheck = document.getElementById('recursive-check');
-    const scanButton = document.getElementById('scan-button');
 
     if (uploadBox) {
         uploadBox.addEventListener('click', () => fileInput.click());
@@ -25,10 +22,6 @@ document.addEventListener('DOMContentLoaded', function () {
         fileInput.addEventListener('change', (e) => {
             handleFiles(e.target.files);
         });
-    }
-
-    if (scanButton) {
-        scanButton.addEventListener('click', handleScan);
     }
 
     function handleFiles(files) {
@@ -51,14 +44,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     predictedClass: data.predicted_class,
                     confidence: data.confidence,
                     isMalware: data.predicted_class === 1,
-                    executionSteps: []
+                    error: null
                 };
                 results.push(itemResult);
-                uploadedCount++;
-                if (uploadedCount === files.length) {
-                    uploadResult.textContent = 'Processing complete';
-                    displayResults(results);
-                }
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -67,55 +55,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     predictedClass: 'N/A',
                     confidence: 0,
                     isMalware: false,
-                    executionSteps: [],
                     error: error.toString()
                 });
+            })
+            .finally(() => {
                 uploadedCount++;
                 if (uploadedCount === files.length) {
-                    uploadResult.textContent = 'Error during upload';
+                    uploadResult.textContent = 'Processing complete';
                     displayResults(results);
                 }
             });
         }
-    }
-
-    function handleScan() {
-        const pathValue = pathInput.value.trim();
-        if (!pathValue) {
-            alert('Please enter a directory or Samba path.');
-            return;
-        }
-        const isRecursive = recursiveCheck.checked;
-        let username = '';
-        let password = '';
-
-        if (pathValue.toLowerCase().startsWith('smb://')) {
-            username = prompt('Samba Username (leave blank if none):') || '';
-            password = prompt('Samba Password (leave blank if none):') || '';
-        }
-
-        uploadResult.textContent = 'Scanning in progress...';
-        const bodyData = {
-            path: pathValue,
-            recursive: isRecursive,
-            smbUser: username,
-            smbPass: password
-        };
-
-        fetch('/scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(bodyData)
-        })
-        .then(response => response.json())
-        .then(data => {
-            uploadResult.textContent = 'Scan complete';
-            displayResults(data);
-        })
-        .catch(error => {
-            console.error('Scan error:', error);
-            uploadResult.textContent = 'Error during scan';
-        });
     }
 
     function displayResults(data) {
@@ -125,31 +75,22 @@ document.addEventListener('DOMContentLoaded', function () {
             resultItem.classList.add('result-item');
 
             const fileName = document.createElement('p');
-            fileName.textContent = `File/Path: ${fileResult.fileName || fileResult.path || 'N/A'}`;
+            fileName.textContent = `File: ${fileResult.fileName || 'N/A'}`;
+            resultItem.appendChild(fileName);
 
             const predictedClass = document.createElement('p');
-            predictedClass.textContent = `Predicted Class: ${fileResult.predictedClass || 'N/A'}`;
+            predictedClass.textContent = `Predicted Class: ${fileResult.predictedClass}`;
+            resultItem.appendChild(predictedClass);
 
             const confidence = document.createElement('p');
             confidence.textContent = `Confidence: ${parseFloat(fileResult.confidence || 0).toFixed(2)}`;
-
-            resultItem.appendChild(fileName);
-            resultItem.appendChild(predictedClass);
             resultItem.appendChild(confidence);
 
             if (fileResult.isMalware) {
-                const timelineTitle = document.createElement('p');
-                timelineTitle.textContent = 'Execution Steps:';
-                resultItem.appendChild(timelineTitle);
-
-                const timeline = document.createElement('div');
-                timeline.classList.add('timeline');
-                (fileResult.executionSteps || []).forEach(step => {
-                    const stepItem = document.createElement('p');
-                    stepItem.textContent = `${step.stepNumber}: ${step.description}`;
-                    timeline.appendChild(stepItem);
-                });
-                resultItem.appendChild(timeline);
+                const warning = document.createElement('p');
+                warning.style.color = 'red';
+                warning.textContent = 'Malware detected!';
+                resultItem.appendChild(warning);
             }
 
             if (fileResult.error) {
