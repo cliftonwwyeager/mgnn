@@ -134,7 +134,8 @@ def upload_file():
         X = process_file(file_path)
     except Exception as e:
         os.remove(file_path)
-        return jsonify({'error': str(e)}), 400
+        logging.error(f"Error processing file {file_path}: {e}")
+        return jsonify({'error': 'An error occurred while processing the file.'}), 400
     model = load_model()
     if model is None:
         os.remove(file_path)
@@ -285,6 +286,9 @@ def export_sentinel():
 @app.route('/export/influx', methods=['POST'])
 def export_influx():
     if request.is_json:
+        detection_payload = request.get_json(force=True)
+        export_to_siem("Elastic", os.getenv("INFLUXDB_URL", "http://localhost:8086"), detection_payload, REDIS_KEY_ELASTIC_EXPORTS)
+    return jsonify({"status": "OK"})
         detection_payload = request.get_json(force=True)
         export_to_siem("Elastic", os.getenv("INFLUXDB_URL", "http://localhost:8086"), detection_payload, REDIS_KEY_ELASTIC_EXPORTS)
     return jsonify({"status": "OK"})
