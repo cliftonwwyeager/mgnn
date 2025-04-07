@@ -9,4 +9,4 @@ tensorflow==2.18.1
 tensorflow-text==2.18.1
 setuptools==75.6.0
 typing-extensions
-watchdog==2.2.1
+watchdog==6.0.0
