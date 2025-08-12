@@ -11,12 +11,21 @@ import numpy as np
 import redis
 import time
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, Dropout, BatchNormalization, Conv2D, Multiply, Activation, Reshape, GlobalMaxPooling1D, MultiHeadAttention, Add
+from tensorflow.keras.layers import (
+    Input, Dense, Dropout, BatchNormalization, Conv2D, SeparableConv2D,
+    DepthwiseConv2D, Multiply, Activation, Reshape, GlobalMaxPooling1D,
+    GlobalAveragePooling2D, MultiHeadAttention, Add, Concatenate, LayerNormalization,
+    SpatialDropout2D, Lambda
+)
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.optimizers import Adam as KerasAdam, SGD as KerasSGD
+from tensorflow.keras.optimizers.schedules import CosineDecayRestarts
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.metrics import AUC
 from sklearn.model_selection import train_test_split
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
 logging.basicConfig(level=logging.INFO)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
@@ -59,7 +68,7 @@ def load_malicious_hashes_from_csv(csv_path):
                     hashes.append(row[1])
     except Exception as e:
         logging.error(f"Error reading CSV {csv_path}: {e}")
-    return hashes
+    return list(set(hashes))
 
 def load_signatures_from_txt(txt_path):
     signatures = []
@@ -73,9 +82,33 @@ def load_signatures_from_txt(txt_path):
                     signatures.append(line)
     except Exception as e:
         logging.error(f"Error reading signatures from {txt_path}: {e}")
-    return signatures
+    return list(set(signatures))
 
-def binary_to_image(file_path, image_dim=256):
+def _byte_category_map(int_sequence: np.ndarray) -> np.ndarray:
+    cat = np.empty_like(int_sequence, dtype=np.float32)
+    cat[:] = 1.0
+    cat[int_sequence == 0] = 0.0
+    cat[((int_sequence < 32) | (int_sequence == 127)) & (int_sequence != 0)] = 0.33
+    cat[(int_sequence >= 32) & (int_sequence <= 126)] = 0.66
+    return cat
+
+def _blockwise_entropy(int_sequence: np.ndarray, block_size: int = 256) -> np.ndarray:
+    L = len(int_sequence)
+    pad_len = (block_size - (L % block_size)) % block_size
+    if pad_len:
+        int_sequence = np.pad(int_sequence, (0, pad_len), 'constant')
+    blocks = int_sequence.reshape(-1, block_size)
+    ent = np.zeros(blocks.shape[0], dtype=np.float32)
+    for i, blk in enumerate(blocks):
+        counts = np.bincount(blk, minlength=256).astype(np.float32)
+        p = counts / (np.sum(counts) + 1e-9)
+        p = p[p > 0]
+        ent[i] = -np.sum(p * np.log2(p))
+    ent = ent / 8.0
+    per_byte = np.repeat(ent, block_size)
+    return per_byte[:L]
+
+def binary_to_image(file_path, image_dim=256, channels=3):
     with open(file_path, 'rb') as f:
         byte_sequence = f.read()
     int_sequence = np.frombuffer(byte_sequence, dtype=np.uint8)
@@ -84,81 +117,151 @@ def binary_to_image(file_path, image_dim=256):
         int_sequence = int_sequence[:desired_length]
     else:
         int_sequence = np.pad(int_sequence, (0, desired_length - len(int_sequence)), 'constant')
-    image = int_sequence.reshape(image_dim, image_dim).astype(np.uint8)
-    return image / 255.0
+
+    ch0 = (int_sequence.astype(np.float32) / 255.0)
+    ch1 = _blockwise_entropy(int_sequence, block_size=256).astype(np.float32)
+    ch2 = _byte_category_map(int_sequence).astype(np.float32)
+    stacked = np.stack([ch0, ch1, ch2], axis=-1)  # (desired_length, 3)
+    image = stacked.reshape(image_dim, image_dim, channels).astype(np.float32)
+    return image
 
 def create_training_dataset_from_uploads(uploads_dir, signatures, image_dim=256):
     X, y = [], []
     if not os.path.exists(uploads_dir):
         return None, None
+    seen_hashes = set()
     for root, _, files in os.walk(uploads_dir):
         for fname in files:
             file_path = os.path.join(root, fname)
             try:
-                img = binary_to_image(file_path, image_dim)
-                X.append(img)
                 with open(file_path, 'rb') as f:
                     content = f.read()
                 file_hash = hashlib.sha256(content).hexdigest()
+                if file_hash in seen_hashes:
+                    continue
+                seen_hashes.add(file_hash)
+                img = binary_to_image(file_path, image_dim=image_dim, channels=3)
+                X.append(img)
                 label = 1 if file_hash in signatures else 0
                 y.append(label)
             except Exception as e:
                 logging.error(f"Error processing file {file_path}: {e}")
     if X:
-        X = np.array(X).reshape(-1, image_dim, image_dim, 1)
+        X = np.array(X, dtype=np.float32).reshape(-1, image_dim, image_dim, 3)
         y = tf.keras.utils.to_categorical(y, num_classes=2) if tf is not None else np.array(y)
         return X, y
     else:
         return None, None
 
-def GatedCNNBlock(filters, kernel_size=(3, 3), stride=(1, 1), dropout_rate=0.3):
+def SqueezeExcite(ch, ratio=16):
     def block(x):
-        conv = Conv2D(filters, kernel_size, strides=stride, padding='same')(x)
-        conv = BatchNormalization()(conv)
-        conv = Activation('relu')(conv)
-        conv = Dropout(dropout_rate)(conv)
-        gate = Conv2D(filters, kernel_size, strides=stride, padding='same')(x)
-        gate = BatchNormalization()(gate)
-        gate = Activation('sigmoid')(gate)
-        gate = Dropout(dropout_rate)(gate)
-        return Multiply()([conv, gate])
+        s = GlobalAveragePooling2D()(x)
+        s = Dense(ch // ratio, activation='relu')(s)
+        s = Dense(ch, activation='sigmoid')(s)
+        s = tf.keras.layers.Reshape((1,1,ch))(s)
+        return Multiply()([x, s])
     return block
 
-def build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(3, 3), dropout_rate=0.4, num_classes=2):
+def CoordConv():
+    def layer(x):
+        shape = tf.shape(x)
+        h = shape[1]; w = shape[2]
+        xx = tf.linspace(-1.0, 1.0, w)
+        yy = tf.linspace(-1.0, 1.0, h)
+        x_grid = tf.tile(tf.reshape(xx, (1,1,w,1)), (shape[0], h, 1, 1))
+        y_grid = tf.tile(tf.reshape(yy, (1,h,1,1)), (shape[0], 1, w, 1))
+        return Concatenate(axis=-1)([x, x_grid, y_grid])
+    return Lambda(layer)
+
+def ResidualGatedSE(filters, kernel_size=3, stride=1, dropout_rate=0.2):
+    def block(x):
+        shortcut = x
+        x1 = SeparableConv2D(filters, kernel_size, strides=stride, padding='same', use_bias=False)(x)
+        x1 = BatchNormalization()(x1)
+        x1 = Activation('swish')(x1)
+        x1 = SpatialDropout2D(dropout_rate)(x1)
+        gate = SeparableConv2D(filters, kernel_size, strides=stride, padding='same', use_bias=False)(x)
+        gate = BatchNormalization()(gate)
+        gate = Activation('sigmoid')(gate)
+        xg = Multiply()([x1, gate])
+        xg = SqueezeExcite(filters)(xg)
+        if shortcut.shape[-1] != filters or stride != 1:
+            shortcut = Conv2D(filters, 1, strides=stride, padding='same', use_bias=False)(shortcut)
+            shortcut = BatchNormalization()(shortcut)
+        out = Add()([shortcut, xg])
+        out = Activation('swish')(out)
+        return out
+    return block
+
+def TransformerRefiner(embed_dim, num_heads=4, dropout=0.2):
+    def block(x):
+        B, H, W, C = x.shape
+        seq = Reshape((-1, x.shape[-1]))(x)
+        seq_ln = LayerNormalization()(seq)
+        mha = MultiHeadAttention(num_heads=num_heads, key_dim=max(8, embed_dim//num_heads), dropout=dropout)
+        attn = mha(seq_ln, seq_ln)
+        seq = Add()([seq, attn])
+        seq_ln2 = LayerNormalization()(seq)
+        ffn = Dense(embed_dim*2, activation='swish')(seq_ln2)
+        ffn = Dropout(dropout)(ffn)
+        ffn = Dense(embed_dim)(ffn)
+        seq = Add()([seq, ffn])
+        return seq
+    return block
+
+def build_model(input_shape=(256, 256, 3), base_filters=32, dropout_rate=0.2, num_classes=2):
     inputs = Input(shape=input_shape)
-    x = inputs
-    if input_shape[-1] == 1:
-        x = Conv2D(3, (3, 3), padding='same')(x)
-    x = GatedCNNBlock(num_filters, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
-    x = GatedCNNBlock(num_filters * 2, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
-    x = GatedCNNBlock(num_filters * 4, kernel_size, stride=(2, 2), dropout_rate=dropout_rate)(x)
-    x = Reshape((-1, num_filters * 4))(x)
-    attn = MultiHeadAttention(num_heads=4, key_dim=num_filters * 1, dropout=dropout_rate)
-    attn_output = attn(x, x)
-    x = Add()([x, attn_output])
-    x = Dropout(dropout_rate)(x)
-    x = GlobalMaxPooling1D()(x)
-    x = Dense(256, activation='relu')(x)
-    x = Dropout(dropout_rate)(x)
-    x = Dense(128, activation='relu')(x)
-    x = Dropout(dropout_rate)(x)
-    outputs = Dense(num_classes, activation='softmax')(x)
+    x = CoordConv()(inputs)
+    x = Conv2D(base_filters, 3, strides=2, padding='same', use_bias=False)(x)
+    x = BatchNormalization()(x)
+    x = Activation('swish')(x)
+    x = ResidualGatedSE(base_filters, kernel_size=3, stride=1, dropout_rate=dropout_rate)(x)
+    x = ResidualGatedSE(base_filters, kernel_size=5, stride=2, dropout_rate=dropout_rate)(x)
+    x = ResidualGatedSE(base_filters*2, kernel_size=3, stride=1, dropout_rate=dropout_rate)(x)
+    x = ResidualGatedSE(base_filters*2, kernel_size=3, stride=2, dropout_rate=dropout_rate) (x)
+    x = ResidualGatedSE(base_filters*4, kernel_size=3, stride=1, dropout_rate=dropout_rate)(x)
+    x = ResidualGatedSE(base_filters*4, kernel_size=3, stride=2, dropout_rate=dropout_rate)(x)
+    seq = TransformerRefiner(embed_dim=base_filters*4, num_heads=4, dropout=dropout_rate)(x)
+    seq = GlobalMaxPooling1D()(seq)
+    head = Dense(256, activation='swish')(seq)
+    head = Dropout(dropout_rate)(head)
+    head = Dense(128, activation='swish')(head)
+    head = Dropout(dropout_rate)(head)
+    outputs = Dense(num_classes, activation='softmax', dtype='float32')(head)
     model = Model(inputs=inputs, outputs=outputs)
-    optimizer = KerasAdam(learning_rate=1e-4)
-    model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+    initial_lr = 3e-4
+    lr_schedule = CosineDecayRestarts(initial_learning_rate=initial_lr, first_decay_steps=300, t_mul=2.0, m_mul=0.8, alpha=1e-5)
+    optimizer = KerasAdam(learning_rate=lr_schedule)
+
+    def focal_loss(gamma=2.0, alpha=0.25):
+        def loss(y_true, y_pred):
+            y_true = tf.cast(y_true, tf.float32)
+            epsilon = tf.keras.backend.epsilon()
+            y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
+            cross_entropy = -y_true * tf.math.log(y_pred)
+            weight = alpha * tf.pow(1 - y_pred, gamma)
+            return tf.reduce_mean(tf.reduce_sum(weight * cross_entropy, axis=1))
+        return loss
+
+    model.compile(optimizer=optimizer, loss=focal_loss(gamma=2.0, alpha=0.5), metrics=['accuracy', AUC(name='auc')])
     return model
 
 def analyze_file(file_path, model_dir):
-    model_path = os.path.join(model_dir, 'best_model.h5')
+    model_path_keras = os.path.join(model_dir, 'best_model.keras')
+    model_path_h5 = os.path.join(model_dir, 'best_model.h5')
+    model_path = model_path_keras if os.path.exists(model_path_keras) else model_path_h5
     if not os.path.exists(model_path):
         return None
-    model = load_model(model_path)
-    image = binary_to_image(file_path, image_dim=256)
-    img_array = np.expand_dims(image, axis=(0, -1))
-    predictions = model.predict(img_array)
-    pred_class = int(np.argmax(predictions, axis=1)[0])
-    confidence = float(predictions[0][pred_class])
-    return {'file_path': file_path, 'predicted_class': pred_class, 'confidence': confidence}
+    model = load_model(model_path, compile=False)
+    image = binary_to_image(file_path, image_dim=256, channels=3)
+    img_array = np.expand_dims(image, axis=0)
+    predictions = model.predict(img_array, verbose=0)[0]
+    malware_index = 1
+    score = float(predictions[malware_index])
+    threshold = float(os.getenv('MALWARE_THRESHOLD', '0.80'))
+    pred_class = 1 if score >= threshold else 0
+    confidence = score if pred_class == 1 else float(predictions[0])
+    return {'file_path': file_path, 'predicted_class': pred_class, 'confidence': float(confidence)}
 
 def export_detections_to_influxdb(detections):
     if not detections:
@@ -203,8 +306,9 @@ class FileCreatedHandler(FileSystemEventHandler):
         if result is not None:
             if result['predicted_class'] == 1:
                 try:
-                    file_hash = hashlib.sha256(open(event.src_path, 'rb').read()).hexdigest()
-                except Exception as e:
+                    with open(event.src_path, 'rb') as f:
+                        file_hash = hashlib.sha256(f.read()).hexdigest()
+                except Exception:
                     file_hash = None
                 if file_hash:
                     redis_client.sadd('detected_malware', file_hash)
@@ -256,16 +360,20 @@ def retrieve_confirmations_from_redis():
     confirmation_data = []
     for record in confirmed:
         try:
+            if isinstance(record, bytes):
+                record = record.decode('utf-8', errors='ignore')
             confirmation_data.append(json.loads(record))
         except json.JSONDecodeError:
             continue
     return confirmation_data
 
 def reinforcement_learning_update(model_dir, confirmation_data):
-    model_path = os.path.join(model_dir, 'best_model.h5')
+    model_path_keras = os.path.join(model_dir, 'best_model.keras')
+    model_path_h5 = os.path.join(model_dir, 'best_model.h5')
+    model_path = model_path_keras if os.path.exists(model_path_keras) else model_path_h5
     if not os.path.exists(model_path):
         return
-    model = load_model(model_path)
+    model = load_model(model_path, compile=False)
     optimizer = KerasAdam(learning_rate=1e-4)
     images = []
     labels = []
@@ -275,13 +383,12 @@ def reinforcement_learning_update(model_dir, confirmation_data):
         bin_file = os.path.join(model_dir, 'uploads', f"{hash_value}.bin")
         if not os.path.exists(bin_file):
             continue
-        img = binary_to_image(bin_file, image_dim=256)
-        img = np.expand_dims(img, axis=(0, -1))
-        images.append(img[0])
+        img = binary_to_image(bin_file, image_dim=256, channels=3)
+        images.append(img)
         labels.append(true_class)
     if not images:
         return
-    images = np.array(images)
+    images = np.array(images, dtype=np.float32)
     labels = tf.keras.utils.to_categorical(labels, num_classes=2)
     for epoch in range(5):
         with tf.GradientTape() as tape:
@@ -289,8 +396,20 @@ def reinforcement_learning_update(model_dir, confirmation_data):
             loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(labels, preds))
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    model.save(os.path.join(model_dir, 'best_model_updated.keras'))
     model.save(os.path.join(model_dir, 'best_model_updated.h5'))
     logging.info(f"Reinforcement learning update applied to {len(images)} samples.")
+
+def _compute_class_weights(y_one_hot):
+    y = np.argmax(y_one_hot, axis=1)
+    positives = np.sum(y == 1)
+    negatives = np.sum(y == 0)
+    if positives == 0 or negatives == 0:
+        return {0: 1.0, 1: 1.0}
+    total = positives + negatives
+    w0 = total / (2.0 * negatives)
+    w1 = total / (2.0 * positives)
+    return {0: float(w0), 1: float(w1)}
 
 def main(data_dir, directories_to_monitor):
     output_dir = os.path.join("mgnn", "mgnn-docker")
@@ -309,9 +428,10 @@ def main(data_dir, directories_to_monitor):
     uploads_dir = os.path.join(data_dir, 'uploads')
     real_X, real_y = create_training_dataset_from_uploads(uploads_dir, all_signatures, image_dim=256)
     synthetic_count = 100
-    synthetic_X = np.random.rand(synthetic_count, 256, 256, 1).astype(np.float32)
+    synthetic_X = np.random.rand(synthetic_count, 256, 256, 3).astype(np.float32)
     synthetic_y = np.random.randint(0, 2, size=(synthetic_count,))
     synthetic_y = tf.keras.utils.to_categorical(synthetic_y, num_classes=2) if tf is not None else synthetic_y
+
     if real_X is not None and real_y is not None and len(real_X) > 0:
         X_data = np.concatenate([real_X, synthetic_X], axis=0)
         y_data = np.concatenate([real_y, synthetic_y], axis=0)
@@ -319,18 +439,34 @@ def main(data_dir, directories_to_monitor):
     else:
         X_data, y_data = synthetic_X, synthetic_y
         logging.info("No real training data found; using synthetic data only.")
+
     indices = np.arange(X_data.shape[0]); np.random.shuffle(indices)
     X_data, y_data = X_data[indices], y_data[indices]
-    x_train, x_temp, y_train, y_temp = train_test_split(X_data, y_data, test_size=0.4, random_state=42)
-    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42)
-    model = build_model(input_shape=(256, 256, 1), num_filters=32, kernel_size=(3, 3), dropout_rate=0.4, num_classes=2)
-    model.compile(optimizer=KerasSGD(learning_rate=0.01, momentum=0.9, nesterov=True),
-                  loss='categorical_crossentropy', metrics=['accuracy'])
-    model.fit(x_train, y_train, validation_data=(x_val, y_val),
-              epochs=10, batch_size=32)
-    loss, accuracy = model.evaluate(x_test, y_test, verbose=0)
-    logging.info(f"Final model evaluation - Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
-    model.save(os.path.join(output_dir, 'best_model.h5'))
+    x_train, x_temp, y_train, y_temp = train_test_split(X_data, y_data, test_size=0.4, random_state=42, stratify=np.argmax(y_data, axis=1))
+    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, test_size=0.5, random_state=42, stratify=np.argmax(y_temp, axis=1))
+    model = build_model(input_shape=(256, 256, 3), base_filters=32, dropout_rate=0.25, num_classes=2)
+    class_weights = _compute_class_weights(y_train)
+    callbacks = [
+        EarlyStopping(monitor='val_auc', mode='max', patience=5, restore_best_weights=True),
+        ReduceLROnPlateau(monitor='val_auc', mode='max', factor=0.5, patience=2, min_lr=1e-6, verbose=1),
+        ModelCheckpoint(os.path.join(output_dir, 'best_model.keras'), monitor='val_auc', mode='max', save_best_only=True, verbose=1),
+        ModelCheckpoint(os.path.join(output_dir, 'best_model.h5'), monitor='val_auc', mode='max', save_best_only=True, verbose=1)
+    ]
+
+    model.fit(
+        x_train, y_train,
+        validation_data=(x_val, y_val),
+        epochs=30,
+        batch_size=32,
+        class_weight=class_weights,
+        callbacks=callbacks,
+        verbose=2
+    )
+
+    loss, accuracy, auc = model.evaluate(x_test, y_test, verbose=0)
+    logging.info(f"Final model evaluation - Loss: {loss:.4f}, Accuracy: {accuracy:.4f}, AUC: {auc:.4f}")
+    model.save(os.path.join(output_dir, 'last_model.keras'))
+    model.save(os.path.join(output_dir, 'last_model.h5'))
     confirmations = retrieve_confirmations_from_redis()
     if confirmations:
         reinforcement_learning_update(output_dir, confirmations)
@@ -353,9 +489,6 @@ def main(data_dir, directories_to_monitor):
             obs.join()
 
 if __name__ == "__main__":
-    data_dir = "/path/to/upload/folder"
-    directories_to_monitor = [os.path.join(data_dir, 'uploads')]
-    main(data_dir, directories_to_monitor)
     data_dir = "/path/to/upload/folder"
     directories_to_monitor = [os.path.join(data_dir, 'uploads')]
     main(data_dir, directories_to_monitor)
